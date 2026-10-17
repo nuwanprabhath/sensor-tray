@@ -1,0 +1,114 @@
+# Builds Sensor Tray and publishes it as a GitHub Release whenever a `v*` tag is pushed.
+#
+# Two jobs so the `contents: write` token only exists in the one that runs no build code:
+#   build   (read-only) — tag must match VERSION, run SensorTrayChecks, build a universal
+#                         (arm64 + x86_64) ad-hoc-signed app, zip it, extract release notes
+#                         from CHANGELOG.md, upload both as a workflow artifact.
+#   publish (tags only) — download that artifact and create the release with `gh`.
+#
+# `workflow_dispatch` runs `build` alone: a dry run that produces the zip as a downloadable
+# workflow artifact without creating a release.
+#
+# The zip is always named Sensor-Tray-macOS.zip so the README can link to
+# releases/latest/download/Sensor-Tray-macOS.zip.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # build.sh derives CFBundleVersion from the commit count
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(cat VERSION)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v$tag does not match VERSION $version"
+            exit 1
+          fi
+
+      - name: Checks
+        run: swift run SensorTrayChecks
+
+      - name: Build universal app and zip
+        run: ./scripts/package-release.sh --universal
+
+      - name: Verify bundle
+        run: |
+          lipo -info "dist/Sensor Tray.app/Contents/MacOS/SensorTray"
+          codesign --verify --verbose "dist/Sensor Tray.app"
+          plutil -p "dist/Sensor Tray.app/Contents/Info.plist" | grep -E "CFBundleShortVersionString|CFBundleVersion"
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="$(cat VERSION)"
+          # The section for this version: from its "## x.y.z" heading up to the next "## ".
+          awk -v v="$version" '
+            $0 ~ "^## "v"( |$)" { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > dist/release-notes.md
+          cat >> dist/release-notes.md <<'NOTES'
+
+          ### Install
+
+          Download **Sensor-Tray-macOS.zip**, unzip it, and drag **Sensor Tray.app** into `/Applications`. It runs on Apple Silicon and Intel Macs with macOS 14 or later.
+
+          The app isn't notarized, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway**, or run `xattr -dr com.apple.quarantine "/Applications/Sensor Tray.app"`. Allow Bluetooth when asked.
+          NOTES
+          cat dist/release-notes.md
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sensor-tray
+          path: |
+            dist/Sensor-Tray-macOS.zip
+            dist/release-notes.md
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # No checkout and no build code: the write token is only in scope for these two steps.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sensor-tray
+          path: release
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/Sensor-Tray-macOS.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Sensor Tray ${GITHUB_REF_NAME#v}" \
+            --notes-file release/release-notes.md

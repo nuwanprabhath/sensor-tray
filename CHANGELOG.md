@@ -7,6 +7,7 @@
 - Chart grid lines are more visible.
 - The last time label on the chart's x axis is no longer clipped. The axis now always spans the whole selected range.
 - README shows the dark-mode screenshot only.
+- First published release: a tag-triggered GitHub Actions workflow builds a universal (Apple Silicon + Intel) app and attaches `Sensor-Tray-macOS.zip` to the release. The README links straight to the latest download.
 
 ## 0.1.0 — 2026-10-17
 

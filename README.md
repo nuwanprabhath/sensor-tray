@@ -28,13 +28,21 @@ You can add as many sensors of these models as you like and name them.
   <img src="docs/sensors.png" alt="Sensors window listing configured sensors with rename, star, reorder, export and remove controls, a Nearby section and a Launch at login toggle" width="480">
 </p>
 
-## Download
+## Download & install
 
-Grab the latest build from [Releases](https://github.com/nuwanprabhath/sensor-tray/releases). Download the `.zip`, unzip it, and drag `Sensor Tray.app` into `/Applications`.
+**[⬇ Download Sensor Tray for macOS](https://github.com/nuwanprabhath/sensor-tray/releases/latest/download/Sensor-Tray-macOS.zip)**. It's a universal build for Apple Silicon and Intel and needs macOS 14 Sonoma or later. All versions are on the [Releases](https://github.com/nuwanprabhath/sensor-tray/releases) page.
 
-The app is ad-hoc signed (not notarized by Apple), so the first time, **right-click the app → Open → Open**. On first launch macOS asks for Bluetooth access; allow it.
+1. Unzip it and drag **Sensor Tray.app** into **Applications**.
+2. Open it. The app is ad-hoc signed, not notarized by Apple, so macOS blocks the first launch. Go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to "Sensor Tray". Or, in Terminal:
+   ```sh
+   xattr -dr com.apple.quarantine "/Applications/Sensor Tray.app"
+   ```
+3. Allow **Bluetooth** when asked. A thermometer and reading appear in the menu bar.
+4. Click it → **Sensors…** → **Add** your sensors under *Nearby*, and name them. History from the sensors' memory downloads in the background (about a minute per sensor).
 
-## Build & install
+To start it at login, turn on **Launch at login** in the Sensors window.
+
+## Build from source
 
 Requires macOS 14+ and the Xcode Command Line Tools.
 
@@ -43,6 +51,15 @@ Requires macOS 14+ and the Xcode Command Line Tools.
 open "dist/Sensor Tray.app"                     # run it
 cp -R "dist/Sensor Tray.app" /Applications/     # install
 ```
+
+## Releasing
+
+Every push of a `v*` tag runs [the release workflow](.github/workflows/release.yml) on a macOS runner. It runs the checks, builds a universal ad-hoc-signed app, and publishes a GitHub Release with `Sensor-Tray-macOS.zip`, using the tag's `CHANGELOG.md` section as release notes.
+
+1. Bump `VERSION` and add a `## x.y.z` section to `CHANGELOG.md`.
+2. Commit, then `git tag vx.y.z && git push origin main vx.y.z`. The workflow fails if the tag doesn't match `VERSION`.
+
+`./scripts/package-release.sh` builds the same zip locally (add `--universal` with full Xcode). Running the workflow manually (*Actions → Release → Run workflow*) is a dry run that uploads the zip as a workflow artifact without releasing.
 
 ## CLI / development
 

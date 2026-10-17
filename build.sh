@@ -1,20 +1,29 @@
 #!/bin/bash
 # Builds the release binary and assembles "Sensor Tray.app" in dist/.
+#   ./build.sh              native arch (fast, for local use)
+#   ./build.sh --universal  arm64 + x86_64 (needs full Xcode; used by the release workflow)
 set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_NAME="Sensor Tray"
 BUNDLE_ID="com.nuwan.sensor-tray"
-VERSION="0.1.1"
-BUILD_NUMBER="2"
+VERSION="$(cat VERSION)"
+# Monotonic build number for CFBundleVersion: commit count (falls back to 1 outside git).
+BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 DIST="dist/$APP_NAME.app"
 
-swift build -c release --product SensorTray
+if [ "${1:-}" = "--universal" ]; then
+    swift build -c release --product SensorTray --arch arm64 --arch x86_64
+    BINARY=".build/apple/Products/Release/SensorTray"
+else
+    swift build -c release --product SensorTray
+    BINARY=".build/release/SensorTray"
+fi
 
 rm -rf "$DIST"
 mkdir -p "$DIST/Contents/MacOS" "$DIST/Contents/Resources"
 
-cp ".build/release/SensorTray" "$DIST/Contents/MacOS/SensorTray"
+cp "$BINARY" "$DIST/Contents/MacOS/SensorTray"
 
 if [ ! -f "AppIcon.icns" ]; then
     ./scripts/generate_icon.sh
