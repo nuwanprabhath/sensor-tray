@@ -5,7 +5,6 @@ import SwiftUI
 struct PopoverView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openWindow) private var openWindow
-    @AppStorage("chartRange") private var range: ChartRange = .day
     @AppStorage("chartMetric") private var metric: ChartMetric = .temperature
 
     var body: some View {
@@ -28,35 +27,21 @@ struct PopoverView: View {
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Picker("Metric", selection: $metric) {
-                            ForEach(ChartMetric.allCases) { Image(systemName: $0.symbol).help($0.title).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(width: 76)
-
-                        Spacer()
-
-                        Picker("Range", selection: $range) {
-                            ForEach(ChartRange.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(width: 180)
-                    }
-                    HistoryChart(range: range, metric: metric)
-                        .frame(height: 150)
-                }
-                .padding(10)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+                ChartPanel(charts: model.charts, metric: $metric)
             }
 
             footer
         }
         .padding(12)
         .frame(width: 360)
+        .onAppear {
+            // Each opening starts at the present.
+            model.charts.goLive()
+            model.charts.setSensors(model.sensors.map(\.id))
+            model.charts.reload()
+        }
+        .onChange(of: model.sensors.map(\.id)) { _, ids in model.charts.setSensors(ids) }
+        .onChange(of: model.dataVersion) { _, _ in model.charts.reload() }
     }
 
     private var bluetoothBanner: String? {
@@ -137,5 +122,102 @@ struct PopoverView: View {
     private func showSensors() {
         openWindow(id: "sensors")
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// Metric and range pickers, the time navigator, and the chart.
+private struct ChartPanel: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject var charts: ChartModel
+    @Binding var metric: ChartMetric
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Picker("Metric", selection: $metric) {
+                    ForEach(ChartMetric.allCases) { Image(systemName: $0.symbol).help($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 70)
+
+                Spacer(minLength: 6)
+
+                Picker("Range", selection: Binding(get: { charts.window.range }, set: { charts.setRange($0) })) {
+                    ForEach(ChartRange.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 236)
+            }
+
+            navigator
+
+            Group {
+                if let snapshot = charts.snapshot {
+                    HistoryChart(snapshot: snapshot, metric: metric, styles: styles, charts: charts)
+                        .equatable()
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(height: 160)
+            .help(charts.window.range == .all ? "" : "Drag or swipe sideways to move through time")
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var styles: [SeriesStyle] {
+        model.sensors.map { SeriesStyle(id: $0.id, name: $0.name, color: model.color(for: $0)) }
+    }
+
+    /// ‹  10 – 17 Oct 2026  ›            Now
+    private var navigator: some View {
+        HStack(spacing: 6) {
+            let pannable = charts.window.range != .all
+            if pannable {
+                Button { charts.step(-1) } label: { Image(systemName: "chevron.left") }
+                    .disabled(!charts.canStepBack)
+                    .help("Earlier")
+            }
+            Text(periodLabel)
+                .font(.system(size: 11, weight: .medium).monospacedDigit())
+                .lineLimit(1)
+                .frame(minWidth: pannable ? 150 : nil, alignment: pannable ? .center : .leading)
+            if pannable {
+                Button { charts.step(1) } label: { Image(systemName: "chevron.right") }
+                    .disabled(!charts.canStepForward)
+                    .help("Later")
+            }
+            Spacer()
+            if !charts.window.isLive {
+                Button("Now") { charts.goLive() }
+                    .font(.system(size: 11, weight: .medium))
+                    .help("Jump back to the latest readings")
+            }
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+    }
+
+    private var periodLabel: String {
+        let now = Int.nowMinute()
+        let earliest = charts.snapshot?.earliest
+        let span = charts.window.span(now: now, earliest: earliest)
+        let start = HistoryChart.date(span.lowerBound)
+        let end = HistoryChart.date(span.upperBound)
+        switch charts.window.range {
+        case .sixHours, .day:
+            if charts.window.isLive { return charts.window.range == .day ? "Last 24 hours" : "Last 6 hours" }
+            return (start..<end).formatted(.interval.day().month(.abbreviated).hour())
+        case .week, .month:
+            return (start..<end).formatted(.interval.day().month(.abbreviated).year())
+        case .year:
+            return (start..<end).formatted(.interval.month(.abbreviated).year())
+        case .all:
+            guard let earliest else { return "All history" }
+            return "All history · since " + HistoryChart.date(earliest).formatted(.dateTime.month(.abbreviated).year())
+        }
     }
 }

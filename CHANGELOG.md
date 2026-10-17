@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 — 2026-10-17
+
+- **Long-term history**: new **1Y** and **All** ranges, plus navigation through time with **‹ ›** (one window per step), dragging the chart, or a two-finger sideways swipe on the trackpad. **Now** returns to the present. The label shows the period on screen ("Last 24 hours", "10–17 Oct 2026", "Oct 2025 – Oct 2026").
+- At day-or-coarser resolution (1Y, All) each sensor shows a shaded daily min–max band behind its average line, so seasonal changes and day/night spread are visible, and the hover read-out adds the day's range.
+- **Storage rewrite (schema v2)**: compact integer rows (~20 bytes per sensor-minute versus ~95) plus an hourly rollup table maintained on every write. Existing databases migrate automatically on first launch (about 5.5 MB → 1.1 MB for the first three weeks of data).
+- **Performance**: chart and sparkline data now load on a background queue over a separate read-only SQLite connection, with coalesced requests and a cap of 400 points per line at any zoom. Hovering no longer re-queries the database, and backfills insert through one prepared statement.
+- X-axis ticks are calendar-aligned (hours, days, weeks, quarters, half-years) and kept clear of the plot edges, so labels never clip or collide.
+- Developer tools: `--generate-demo <db> [years]` writes synthetic multi-year data, `SENSORTRAY_DB` points the app or CLI at another database, `--snapshot … --range <R>`; `SensorTrayChecks` now covers migration, rollups, window/pan maths, a full synthetic year with timings, and memory growth.
+
 ## 0.1.1 — 2026-10-17
 
 - Pick a color per sensor: click its dot in the Sensors window for palette swatches, a custom color, or Reset. The color is used for the card, sparkline and chart line.

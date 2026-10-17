@@ -19,10 +19,24 @@ You can add as many sensors of these models as you like and name them.
 ## Features
 
 - **Menu bar**: the main (★) sensor's `25.1°  62%`, dimmed when the reading is more than 10 minutes old.
-- **Popover**: a card per sensor (temperature, humidity, battery, 24 h min–max and a sparkline) and a combined chart with 6H / 24H / 7D / 30D ranges, a temperature/humidity toggle and a hover read-out. Gaps (Mac asleep, sensor out of range) show as breaks in the line, not misleading straight bridges.
+- **Popover**: a card per sensor (temperature, humidity, battery, 24 h min–max and a sparkline) and a combined chart with a temperature/humidity toggle and a hover read-out. Gaps (Mac asleep, sensor out of range) show as breaks in the line, not misleading straight bridges.
+- **History for as long as you run it**: every minute reading is kept, with no expiry. Choose **6H / 24H / 7D / 30D / 1Y / All**, then step back with **‹ ›**, drag the chart, or swipe sideways on the trackpad to move through time; **Now** jumps back to the present. At 1Y and All, each sensor also gets a shaded daily min–max band, so seasonal changes stand out.
 - **History backfill**: on launch, on wake, every 6 hours and on demand, the app connects briefly to each sensor and downloads only the stretch of its onboard memory that's missing locally, then disconnects so the phone apps keep working. If a sensor doesn't connect (weak signal), it retries 10 minutes later.
 - **Sensors window**: add nearby sensors (with signal bars, so you can tell which is which), rename, pick each sensor's color (click its dot), reorder, choose the menu bar sensor, export history as CSV, and remove. It also has a launch-at-login toggle.
-- Live data is read passively from Bluetooth advertisements, so no pairing is needed. Everything stays on this Mac in `~/Library/Application Support/SensorTray/sensortray.sqlite`.
+- Live data is read passively from Bluetooth advertisements, so no pairing is needed. Everything stays on this Mac in `~/Library/Application Support/SensorTray/sensortray.sqlite`, at about 8 MB per sensor per year.
+
+## Storage & performance
+
+- **Compact rows**: one row per sensor-minute, with an integer sensor key and °C / %RH stored as integer tenths (about 20 bytes a row including the rollup, versus about 95 in 0.1.x). Older databases are migrated automatically on first launch.
+- **Hourly rollup**: a `hourly` table (count, sum, min, max) is updated with every write, so 30D / 1Y / All read about 8,760 rows per year instead of 525,600. Ranges up to 7 days read minute rows directly.
+- **Bounded charts**: every range is bucketed to 400 points or fewer per sensor (1 min … 2 weeks per point), however many years are stored.
+- **Off the main thread**: chart queries run on a background queue over a separate read-only SQLite connection (WAL mode). Requests coalesce, so dragging through months only ever runs the most recent query. Hovering and the chart's marks don't query the database at all.
+- Measured by `swift run SensorTrayChecks` on a synthetic year (525,600 minutes): insert in ~0.9 s, 20 bytes/minute, every range queried in ≤ 2 ms, and no memory growth over 1,800 consecutive chart loads.
+
+<p align="center">
+  <img src="docs/year-view.png" alt="The 1Y view: a year of daily averages per sensor with shaded daily min–max bands, peaking in January and dipping in July" width="360"><br>
+  <sub>1Y view (generated sample data, via <code>--generate-demo</code>)</sub>
+</p>
 
 <p align="center">
   <img src="docs/sensors.png" alt="Sensors window listing configured sensors with rename, star, reorder, export and remove controls, a Nearby section and a Launch at login toggle" width="480">
@@ -69,9 +83,11 @@ The same binary doubles as a test tool:
 .build/release/SensorTray --scan [seconds]            # list nearby sensors with live readings + advert counts
 .build/release/SensorTray --history <uuid> [minutes]  # download a sensor's onboard history
 .build/release/SensorTray --dump                      # configured sensors and stored data
-.build/release/SensorTray --snapshot docs/screenshot-dark.png dark [sensors]   # render the UI to PNG
+.build/release/SensorTray --generate-demo /tmp/demo.sqlite 2   # 2 years of synthetic minute data
+SENSORTRAY_DB=/tmp/demo.sqlite .build/release/SensorTray        # run the app (or any flag) against it
+.build/release/SensorTray --snapshot docs/screenshot-dark.png dark [sensors] [--range 1Y]   # render the UI to PNG
 SENSORTRAY_DEBUG=1 .build/release/SensorTray --scan   # print raw advertisement bytes
-swift run SensorTrayChecks                            # protocol / storage checks
+swift run SensorTrayChecks                            # protocol, storage, migration, chart-window and performance checks
 ```
 
 `SensorTrayChecks` is a plain assertion runner, because XCTest and swift-testing need a full Xcode install. For the same reason the SwiftUI views use a small `ViewState` object instead of `@State`, which is a macro on the macOS 27 SDK and has no plugin in the Command Line Tools.

@@ -1,5 +1,7 @@
+import Darwin
 import Foundation
 import SensorTrayCore
+import SQLite3
 
 // Minimal assertion runner: XCTest / swift-testing need a full Xcode install,
 // so `swift run SensorTrayChecks` stands in for `swift test`.
@@ -31,6 +33,28 @@ func hex(_ string: String) -> [UInt8] {
         index = next
     }
     return bytes
+}
+
+
+func removeDatabase(_ path: String) {
+    for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + suffix) }
+}
+
+func databaseBytes(_ path: String) -> Int {
+    ["", "-wal"].reduce(0) { total, suffix in
+        total + ((try? FileManager.default.attributesOfItem(atPath: path + suffix)[.size] as? Int) ?? 0)
+    }
+}
+
+func residentMB() -> Double {
+    var info = mach_task_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+        }
+    }
+    return result == KERN_SUCCESS ? Double(info.resident_size) / 1_048_576 : 0
 }
 
 // MARK: - Govee
@@ -198,6 +222,205 @@ do {
     store.delete(id: c)
     check(store.series(c, from: 0, to: 1000, bucketMinutes: 1).isEmpty, "store delete removes readings")
     check(!store.sensors().contains { $0.id == c }, "store delete removes sensor")
+}
+
+// MARK: - Schema v1 → v2 migration
+
+do {
+    let path = NSTemporaryDirectory() + "sensortray-v1-\(UUID().uuidString).sqlite"
+    defer { removeDatabase(path) }
+    let a = UUID(), b = UUID()
+    // A database exactly as 0.1.x wrote it.
+    var db: OpaquePointer?
+    sqlite3_open(path, &db)
+    sqlite3_exec(db, """
+        CREATE TABLE sensors(id TEXT PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL,
+            is_main INTEGER NOT NULL DEFAULT 0, sort INTEGER NOT NULL DEFAULT 0,
+            synced_through INTEGER, added_at INTEGER NOT NULL, color TEXT);
+        CREATE TABLE readings(sensor_id TEXT NOT NULL, minute INTEGER NOT NULL, temp_c REAL NOT NULL,
+            humidity REAL NOT NULL, source INTEGER NOT NULL, PRIMARY KEY(sensor_id, minute)) WITHOUT ROWID;
+        INSERT INTO sensors VALUES('\(a.uuidString)', 'Living room', 'h5075', 1, 0, 500, 1, '#FF8800');
+        INSERT INTO sensors VALUES('\(b.uuidString)', 'Bedroom', 'tp357s', 0, 1, NULL, 2, NULL);
+        INSERT INTO readings VALUES('\(a.uuidString)', 120, 25.1, 61.9, 0);
+        INSERT INTO readings VALUES('\(a.uuidString)', 121, 25.3, 62.1, 1);
+        INSERT INTO readings VALUES('\(a.uuidString)', 180, 20.0, 50.0, 1);
+        INSERT INTO readings VALUES('\(b.uuidString)', 120, -3.4, 41.0, 1);
+        """, nil, nil, nil)
+    sqlite3_close(db)
+
+    let store = try Store(path: path)
+    check(store.userVersion == 2, "migration sets user_version")
+    let sensors = store.sensors()
+    check(sensors.map(\.name) == ["Living room", "Bedroom"], "migration keeps sensors \(sensors.map(\.name))")
+    check(sensors.first?.colorHex == "#FF8800" && sensors.first?.isMain == true, "migration keeps color and main")
+    let raw = store.series(a, from: 0, to: 1000, bucketMinutes: 1)
+    check(raw.count == 3 && near(raw.first?.tempC, 25.1) && near(raw.first?.humidity, 61.9), "migration keeps readings \(raw)")
+    check(near(store.series(b, from: 0, to: 1000, bucketMinutes: 1).first?.tempC, -3.4), "migration negative temps")
+    check(store.oldestGapStart(a, now: 600, windowMinutes: 1000, minGap: 5) == 500, "migration keeps synced_through")
+    let hours = store.aggregate(a, from: 0, to: 1000, bucketMinutes: 60)
+    check(hours.count == 2 && hours.first?.count == 2 && near(hours.first?.tempAvg, 25.2), "migration builds hourly rollup \(hours)")
+
+    // Reopening an already-migrated database is a no-op.
+    let reopened = try Store(path: path)
+    check(reopened.series(a, from: 0, to: 1000, bucketMinutes: 1).count == 3, "migration idempotent")
+}
+
+// MARK: - Aggregates and the hourly rollup
+
+do {
+    let path = NSTemporaryDirectory() + "sensortray-agg-\(UUID().uuidString).sqlite"
+    defer { removeDatabase(path) }
+    let store = try Store(path: path)
+    let s = UUID()
+    store.save(SensorConfig(id: s, name: "S", model: .h5075, isMain: true, sort: 0))
+    // Two hours of minute data: temp rises 0.1 °C a minute from 20.0, humidity fixed.
+    let base = 1_000_080 // a whole two hours (÷120)
+    store.insertBackfill(s, points: (0..<120).map { HistoryPoint(minute: base + $0, tempC: 20 + Double($0) / 10, humidity: 50) })
+
+    let fine = store.aggregate(s, from: base, to: base + 119, bucketMinutes: 30)
+    check(fine.count == 4 && fine.allSatisfy { $0.count == 30 }, "aggregate 30-min buckets \(fine.map(\.count))")
+    check(near(fine[0].tempMin, 20.0) && near(fine[0].tempMax, 22.9) && near(fine[0].tempAvg, 21.45), "aggregate min/max/avg")
+
+    let hourly = store.aggregate(s, from: base, to: base + 119, bucketMinutes: 60)
+    check(hourly.count == 2 && near(hourly[1].tempAvg, 28.95) && near(hourly[1].tempMax, 31.9), "aggregate from rollup \(hourly)")
+    let twoHours = store.aggregate(s, from: base, to: base + 119, bucketMinutes: 120)
+    check(twoHours.count == 1 && twoHours[0].count == 120 && near(twoHours[0].tempAvg, 25.95), "rollup weighted average")
+
+    // A live reading replaces the backfilled minute and the rollup follows.
+    store.insertLive(s, minute: base, reading: Reading(tempC: 30, humidity: 50, battery: nil))
+    let afterLive = store.aggregate(s, from: base, to: base + 59, bucketMinutes: 60)
+    check(near(afterLive.first?.tempMax, 30) && afterLive.first?.count == 60, "rollup tracks live override \(afterLive)")
+    // …and a later backfill of that minute doesn't undo it.
+    store.insertBackfill(s, points: [HistoryPoint(minute: base, tempC: 10, humidity: 50)])
+    check(near(store.aggregate(s, from: base, to: base + 59, bucketMinutes: 60).first?.tempMin, 20.1), "backfill never overrides live")
+
+    // Day buckets align to the given UTC offset (e.g. +10:30 → rounded to +10:00 on the rollup).
+    let day = store.aggregate(s, from: base, to: base + 119, bucketMinutes: 1440, alignOffset: 630)
+    check(day.count == 1 && (day[0].minute + 600) % 1440 == 0, "day bucket aligned to local midnight \(day)")
+
+    check(store.firstMinute(s) == base && store.lastMinute(s) == base + 119, "first/last minute")
+    check(store.earliestMinute() == base, "earliest minute across sensors")
+    check(store.sampleCount(s) == 120, "sample count")
+
+    // The read-only connection sees the writer's data.
+    let reader = try Store(path: path, readOnly: true)
+    check(reader.aggregate(s, from: base, to: base + 119, bucketMinutes: 60).count == 2, "read-only connection reads")
+}
+
+// MARK: - Chart window maths
+
+do {
+    let now = 10_000_000
+    let earliest = now - 400 * 1440 // ~13 months of history
+
+    let live = ChartWindow(range: .day)
+    check(live.isLive && live.span(now: now, earliest: earliest) == (now - 1440)...now, "live day span")
+    check(!live.canPanForward(now: now) && live.canPanBack(now: now, earliest: earliest), "live: back only")
+
+    let back = live.panned(by: -1440, now: now, earliest: earliest)
+    check(back.end == now - 1440 && back.canPanForward(now: now), "pan back one day")
+    check(back.panned(by: 1440, now: now, earliest: earliest).isLive, "pan forward returns to live")
+    check(back.panned(by: 99_999, now: now, earliest: earliest).isLive, "pan past now clamps to live")
+
+    let farBack = live.panned(by: -10 * 365 * 1440, now: now, earliest: earliest)
+    check(farBack.end == earliest + 1440, "pan clamps at first reading \(String(describing: farBack.end))")
+    check(!farBack.canPanBack(now: now, earliest: earliest), "can't pan before history")
+
+    let year = ChartWindow(range: .year)
+    check(year.bucketMinutes(now: now, earliest: earliest) == 1440 && year.showsBand(now: now, earliest: earliest), "year: daily buckets with band")
+    check(!ChartWindow(range: .week).showsBand(now: now, earliest: earliest), "week: no band")
+
+    // Not enough history to pan a whole year.
+    check(year.panned(by: -1440, now: now, earliest: now - 100 * 1440).isLive, "short history keeps year live")
+
+    let all = ChartWindow(range: .all)
+    check(all.span(now: now, earliest: earliest) == earliest...now, "all spans history")
+    check(all.bucketMinutes(now: now, earliest: earliest) == 1440, "all: daily buckets for 400 days")
+    check(all.bucketMinutes(now: now, earliest: now - 600 * 1440) == 2 * 1440, "all: 2-day buckets for 600 days")
+    check(all.bucketMinutes(now: now, earliest: now - 10 * 365 * 1440) == 14 * 1440, "all: 2-week buckets for 10 years")
+    check(all.bucketMinutes(now: now, earliest: nil) == 1440 && all.span(now: now, earliest: nil).lowerBound == now - 1440, "all with no data")
+    check(!all.canPanBack(now: now, earliest: earliest) && all.panned(by: -1440, now: now, earliest: earliest) == all, "all doesn't pan")
+
+    let switched = back.withRange(.year, now: now, earliest: earliest)
+    check(switched.range == .year && switched.end == now - 1440, "range switch keeps right edge")
+    check(back.withRange(.all, now: now, earliest: earliest).isLive, "switching to all goes live")
+
+    for range in ChartRange.allCases {
+        let w = ChartWindow(range: range)
+        let span = w.span(now: now, earliest: now - 20 * 365 * 1440)
+        let points = (span.upperBound - span.lowerBound) / w.bucketMinutes(now: now, earliest: now - 20 * 365 * 1440)
+        check(points <= ChartWindow.maxPoints, "\(range.rawValue) stays ≤ \(ChartWindow.maxPoints) points (\(points))")
+    }
+}
+
+// MARK: - A year of minute data: size, speed, bounded output, no memory growth
+
+do {
+    let path = NSTemporaryDirectory() + "sensortray-year-\(UUID().uuidString).sqlite"
+    defer { removeDatabase(path) }
+    let store = try Store(path: path)
+    let s = UUID()
+    store.save(SensorConfig(id: s, name: "Year", model: .h5075, isMain: true, sort: 0))
+
+    let minutesPerYear = 365 * 1440
+    let now = 29_000_000
+    let start = now - minutesPerYear + 1
+    // Seasonal swing (±8 °C over the year) plus a daily one (±3 °C).
+    func temp(_ m: Int) -> Double {
+        let t = Double(m - start)
+        return 18 + 8 * sin(t / Double(minutesPerYear) * 2 * .pi) + 3 * sin(t / 1440 * 2 * .pi)
+    }
+    let insertStarted = Date()
+    // Fed in 20-day chunks, the way a sensor backfill arrives.
+    for chunk in stride(from: start, through: now, by: 28_800) {
+        let points = (chunk...min(chunk + 28_799, now)).map { HistoryPoint(minute: $0, tempC: (temp($0) * 10).rounded() / 10, humidity: 55) }
+        store.insertBackfill(s, points: points)
+    }
+    let insertSeconds = Date().timeIntervalSince(insertStarted)
+    check(store.sampleCount(s) == minutesPerYear, "year: all minutes stored")
+    print(String(format: "  perf: inserted %d minutes in %.2fs", minutesPerYear, insertSeconds))
+
+    let bytes = databaseBytes(path)
+    let perRow = Double(bytes) / Double(minutesPerYear)
+    print(String(format: "  perf: %.1f MB on disk, %.1f bytes per minute (incl. hourly rollup)", Double(bytes) / 1_048_576, perRow))
+    check(perRow < 30, "year: compact storage (\(perRow) bytes/minute)")
+
+    let reader = try Store(path: path, readOnly: true)
+    for range in ChartRange.allCases {
+        let window = ChartWindow(range: range)
+        let span = window.span(now: now, earliest: start)
+        let bucket = window.bucketMinutes(now: now, earliest: start)
+        let began = Date()
+        let points = reader.aggregate(s, from: span.lowerBound, to: span.upperBound, bucketMinutes: bucket, alignOffset: 630)
+        let ms = Date().timeIntervalSince(began) * 1000
+        print(String(format: "  perf: %@ → %d points in %.1f ms", range.rawValue, points.count, ms))
+        check(points.count <= ChartWindow.maxPoints + 1, "\(range.rawValue): bounded points (\(points.count))")
+        check(!points.isEmpty, "\(range.rawValue): has data")
+        check(ms < 250, "\(range.rawValue): query under 250 ms (\(ms))")
+    }
+
+    // The yearly view shows the season: winter low / summer high differ by ~16 °C.
+    let yearly = reader.aggregate(s, from: start, to: now, bucketMinutes: 1440, alignOffset: 0)
+    if let coldest = yearly.map(\.tempAvg).min(), let warmest = yearly.map(\.tempAvg).max() {
+        check(warmest - coldest > 14, "year: seasonal swing visible (\(warmest - coldest))")
+    }
+    // Each day's band covers the daily ±3 °C swing.
+    check(yearly.dropFirst().dropLast().allSatisfy { $0.tempMax - $0.tempMin > 5 }, "year: daily min–max band")
+
+    // Repeated chart loads must not grow memory (statements finalized, nothing retained).
+    func load() {
+        for range in ChartRange.allCases {
+            let w = ChartWindow(range: range)
+            let span = w.span(now: now, earliest: start)
+            _ = reader.aggregate(s, from: span.lowerBound, to: span.upperBound, bucketMinutes: w.bucketMinutes(now: now, earliest: start))
+        }
+    }
+    for _ in 0..<20 { load() } // warm SQLite's page cache first
+    let before = residentMB()
+    for _ in 0..<300 { autoreleasepool { load() } }
+    let growth = residentMB() - before
+    print(String(format: "  perf: memory growth over 1,800 chart loads: %.1f MB", growth))
+    check(growth < 8, "no memory growth across repeated loads (\(growth) MB)")
 }
 
 // MARK: - CSV

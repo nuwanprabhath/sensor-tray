@@ -9,6 +9,7 @@ struct SensorTrayApp: App {
         MenuBarExtra {
             PopoverView()
                 .environmentObject(model)
+                .environmentObject(model.charts)
         } label: {
             MenuBarLabel(model: model)
         }

@@ -22,29 +22,6 @@ struct NearbySensor: Identifiable {
     var id: UUID { advert.id }
 }
 
-enum ChartRange: String, CaseIterable, Identifiable {
-    case sixHours = "6H", day = "24H", week = "7D", month = "30D"
-
-    var id: String { rawValue }
-    var minutes: Int {
-        switch self {
-        case .sixHours: return 360
-        case .day: return 1440
-        case .week: return 7 * 1440
-        case .month: return 30 * 1440
-        }
-    }
-    /// Keeps every range around 150–720 points per sensor.
-    var bucketMinutes: Int {
-        switch self {
-        case .sixHours: return 2
-        case .day: return 5
-        case .week: return 30
-        case .month: return 60
-        }
-    }
-}
-
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var sensors: [SensorConfig] = []
@@ -59,6 +36,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var dataVersion = 0
 
     let store: Store
+    /// Chart queries run on their own read-only connection, off the main thread.
+    let charts: ChartModel
     private let ble = BLECentral()
     private lazy var downloader = HistoryDownloader(ble: ble)
     private var lastStoredMinute: [UUID: Int] = [:]
@@ -70,12 +49,17 @@ final class AppModel: ObservableObject {
 
     /// `autoSync: false` keeps tooling (e.g. `--snapshot`) from connecting to sensors.
     init(autoSync: Bool = true) {
+        var path = Store.defaultPath()
         do {
-            store = try Store(path: Store.defaultPath())
+            store = try Store(path: path)
         } catch {
-            NSLog("SensorTray: falling back to in-memory store: \(error)")
-            store = try! Store(path: ":memory:")
+            // A scratch file rather than ":memory:", so the chart reader's
+            // second connection can still open it.
+            NSLog("SensorTray: falling back to a temporary store: \(error)")
+            path = NSTemporaryDirectory() + "sensortray-fallback.sqlite"
+            store = try! Store(path: path)
         }
+        charts = ChartModel(reader: try? Store(path: path, readOnly: true))
         reloadSensors()
         restoreLastReadings()
 
@@ -118,11 +102,6 @@ final class AppModel: ObservableObject {
         return nearby.values
             .filter { !configured.contains($0.id) && Date().timeIntervalSince($0.seenAt) < 120 }
             .sorted { $0.advert.rssi > $1.advert.rssi }
-    }
-
-    func series(_ id: UUID, range: ChartRange) -> [HistoryPoint] {
-        let now = Int.nowMinute()
-        return store.series(id, from: now - range.minutes, to: now, bucketMinutes: range.bucketMinutes)
     }
 
     // MARK: Live data

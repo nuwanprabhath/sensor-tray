@@ -8,7 +8,9 @@ import SensorTrayCore
 //   SensorTray --scan [seconds]           list nearby Govee/ThermoPro sensors with live readings
 //   SensorTray --history <uuid> [minutes] download a sensor's stored history (default 60 min)
 //   SensorTray --dump                     print configured sensors and stored data ranges
-//   SensorTray --snapshot <png> [light|dark] [sensors] render the popover (or Sensors window) with live data
+//   SensorTray --snapshot <png> [light|dark] [sensors] [--range 1Y] render the popover (or Sensors window)
+//   SensorTray --generate-demo <db> [years]  synthetic multi-year database for UI/perf testing
+//   SENSORTRAY_DB=<db> SensorTray …          use another database (e.g. a demo or a copy of real data)
 let arguments = CommandLine.arguments
 
 func argument(after flag: String) -> String? {
@@ -26,6 +28,8 @@ if arguments.contains("--scan") {
     MainActor.assumeIsolated { CLI.scan() }
 } else if arguments.contains("--history") {
     MainActor.assumeIsolated { CLI.history() }
+} else if arguments.contains("--generate-demo") {
+    try MainActor.assumeIsolated { try CLI.generateDemo() }
 } else if arguments.contains("--snapshot") {
     MainActor.assumeIsolated { CLI.snapshot() }
 } else if arguments.contains("--dump") {
@@ -118,6 +122,7 @@ enum CLI {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let model = AppModel(autoSync: false)
+        model.charts.setRange(ChartRange(rawValue: argument(after: "--range") ?? "") ?? .day, persist: false)
         // Let a few advertisements arrive so the cards show live values.
         RunLoop.main.run(until: Date().addingTimeInterval(12))
 
@@ -125,7 +130,6 @@ enum CLI {
         // reproducible and the app's own preferences aren't touched.
         let suite = "com.nuwan.sensor-tray.snapshot"
         let defaults = UserDefaults(suiteName: suite)!
-        defaults.set(ChartRange.day.rawValue, forKey: "chartRange")
         defaults.set(ChartMetric.temperature.rawValue, forKey: "chartMetric")
         defer { defaults.removePersistentDomain(forName: suite) }
 
@@ -134,6 +138,7 @@ enum CLI {
         }
             .defaultAppStorage(defaults)
             .environmentObject(model)
+            .environmentObject(model.charts)
             .background(Color(nsColor: .windowBackgroundColor))
             .environment(\.colorScheme, dark ? .dark : .light)
         let host = NSHostingView(rootView: root)
@@ -160,15 +165,53 @@ enum CLI {
         }
     }
 
+    /// Two sensors with seasonal (southern-hemisphere) and daily cycles, one
+    /// reading per minute, ending now. Never touches the real database.
+    static func generateDemo() throws {
+        guard let path = argument(after: "--generate-demo") else {
+            print("Usage: --generate-demo <file.sqlite> [years]")
+            return
+        }
+        guard path != Store.defaultPath() else {
+            print("Refusing to overwrite the app's database.")
+            return
+        }
+        let years = arguments.last.flatMap(Double.init) ?? 2
+        for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + suffix) }
+        let store = try Store(path: path)
+        let rooms: [(String, SensorModel, Double, Double)] = [("Living room", .h5075, 21, 6), ("Bedroom", .tp357s, 19, 7)]
+        let now = Int.nowMinute()
+        let total = Int(years * 365 * 1440)
+        let started = Date()
+        for (index, room) in rooms.enumerated() {
+            let id = UUID()
+            store.save(SensorConfig(id: id, name: room.0, model: room.1, isMain: index == 0, sort: index))
+            for chunk in stride(from: now - total, through: now, by: 28_800) {
+                let points = (chunk...min(chunk + 28_799, now)).map { m -> HistoryPoint in
+                    let t = Double(m)
+                    // Peak warmth in late January, coldest in July; warmest mid-afternoon.
+                    let season = cos((t / 1440 - 25) / 365.25 * 2 * .pi)
+                    let day = sin(((t + 570) / 1440 - 0.375) * 2 * .pi)
+                    let noise = sin(t * 0.37) * 0.3 + sin(t * 0.011) * 0.6
+                    let temp = room.2 + room.3 * season + 2.5 * day + noise
+                    let humidity = 55 - 12 * season - 6 * day + noise * 3
+                    return HistoryPoint(minute: m, tempC: (temp * 10).rounded() / 10, humidity: (humidity * 10).rounded() / 10)
+                }
+                store.insertBackfill(id, points: points)
+            }
+        }
+        print(String(format: "Wrote %@: %d sensors × %d minutes in %.1fs", path, rooms.count, total, Date().timeIntervalSince(started)))
+    }
+
     static func dump() throws {
         let store = try Store(path: Store.defaultPath())
         let now = Int.nowMinute()
         for sensor in store.sensors() {
             let day = store.series(sensor.id, from: now - 1440, to: now, bucketMinutes: 1)
-            let all = store.series(sensor.id, from: 0, to: now, bucketMinutes: 1)
             let last = store.lastMinute(sensor.id).map { "\(now - $0) min ago" } ?? "never"
             print("\(sensor.isMain ? "★" : " ") \(sensor.name) [\(sensor.model.displayName)] \(sensor.id.uuidString)")
-            print("    \(all.count) points total, \(day.count) in last 24h, last \(last)")
+            let since = store.firstMinute(sensor.id).map { Date(timeIntervalSince1970: TimeInterval($0 * 60)).formatted(date: .abbreviated, time: .omitted) } ?? "-"
+            print("    \(store.sampleCount(sensor.id)) minutes stored since \(since), \(day.count) in last 24h, last \(last)")
         }
     }
 }

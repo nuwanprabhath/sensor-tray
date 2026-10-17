@@ -5,12 +5,13 @@ import SwiftUI
 /// freshness, and a 24h temperature sparkline.
 struct SensorCard: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var charts: ChartModel
     let sensor: SensorConfig
 
     var body: some View {
         let live = model.latest[sensor.id]
         let color = model.color(for: sensor)
-        let points = sparkPoints
+        let points = charts.sparklines[sensor.id] ?? []
 
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
@@ -28,7 +29,7 @@ struct SensorCard: View {
                 }
                 HStack(spacing: 6) {
                     status(live)
-                    if let low = points.map(\.tempC).min(), let high = points.map(\.tempC).max() {
+                    if let low = points.map(\.tempMin).min(), let high = points.map(\.tempMax).max() {
                         Text(String(format: "24h %.1f–%.1f°C", low, high))
                             .help("Lowest and highest temperature in the last 24 hours")
                     }
@@ -68,10 +69,6 @@ struct SensorCard: View {
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private var sparkPoints: [HistoryPoint] {
-        _ = model.dataVersion
-        return model.series(sensor.id, range: .day)
-    }
 
     @ViewBuilder
     private func status(_ live: LiveReading?) -> some View {
@@ -118,7 +115,7 @@ struct BatteryBadge: View {
 
 /// Minimal line of the last 24h temperatures with a soft fill.
 struct Sparkline: View {
-    let points: [HistoryPoint]
+    let points: [SeriesPoint]
     let color: Color
 
     var body: some View {
@@ -140,7 +137,7 @@ struct Sparkline: View {
     }
 
     private func linePath(in size: CGSize) -> Path {
-        let temps = points.map(\.tempC)
+        let temps = points.map(\.tempAvg)
         let minT = temps.min() ?? 0
         let maxT = temps.max() ?? 1
         let spanT = max(maxT - minT, 0.5)      // flat lines stay flat, not noisy
@@ -149,7 +146,7 @@ struct Sparkline: View {
         var path = Path()
         for (i, p) in points.enumerated() {
             let x = (Double(p.minute) - minM) / spanM * size.width
-            let y = size.height - 2 - (p.tempC - minT) / spanT * (size.height - 4)
+            let y = size.height - 2 - (p.tempAvg - minT) / spanT * (size.height - 4)
             if i == 0 { path.move(to: CGPoint(x: x, y: y)) } else { path.addLine(to: CGPoint(x: x, y: y)) }
         }
         return path
