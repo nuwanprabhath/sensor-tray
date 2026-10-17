@@ -16,6 +16,16 @@ struct LiveReading: Equatable {
     var isStale: Bool { Date().timeIntervalSince(at) > 600 }
 }
 
+/// The latest known state of an air purifier.
+struct LiveAir: Equatable {
+    var reading: AirReading
+    /// When the purifier last reported (it only reports changes).
+    var updatedAt: Date
+    /// Reported during this run, so it's safe to carry forward minute by minute.
+    var isFresh: Bool
+    var status: PhilipsClient.Status
+}
+
 struct NearbySensor: Identifiable {
     var advert: Advert
     var seenAt: Date
@@ -34,6 +44,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var lastSyncError: String?
     /// Bumped whenever stored readings change so charts re-query.
     @Published private(set) var dataVersion = 0
+    @Published private(set) var air: [UUID: LiveAir] = [:]
+    /// Purifiers that answered the last network discovery, by sensor id.
+    @Published private(set) var discoveredPurifiers: [UUID: PurifierInfo] = [:]
+    @Published private(set) var isDiscoveringPurifiers = false
 
     let store: Store
     /// Chart queries run on their own read-only connection, off the main thread.
@@ -44,6 +58,10 @@ final class AppModel: ObservableObject {
     private var syncTimer: Timer?
     private var retryWork: DispatchWorkItem?
     private var advertCounts: [UUID: Int] = [:]
+    private var purifierClients: [UUID: PhilipsClient] = [:]
+    private var lastAirMinute: [UUID: Int] = [:]
+    private var airTimer: Timer?
+    private var lastDiscovery: Date?
 
     static let palette: [Color] = [.orange, .teal, .purple, .pink, .green, .indigo, .yellow, .mint]
 
@@ -78,6 +96,7 @@ final class AppModel: ObservableObject {
         ble.startScanning()
 
         guard autoSync else { return }
+        startPurifiers()
         syncTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.syncAll() }
         }
@@ -88,7 +107,21 @@ final class AppModel: ObservableObject {
 
     // MARK: Derived
 
-    var mainSensor: SensorConfig? { sensors.first(where: \.isMain) ?? sensors.first }
+    /// The thermometer shown in the menu bar (purifiers have no temperature).
+    var mainSensor: SensorConfig? {
+        let thermometers = sensors.filter { !$0.model.isAirPurifier }
+        return thermometers.first(where: \.isMain) ?? thermometers.first
+    }
+
+    var hasPurifiers: Bool { sensors.contains { $0.model.isAirPurifier } }
+
+    /// Purifiers found on the network that aren't added yet.
+    var unconfiguredPurifiers: [PurifierInfo] {
+        let configured = Set(sensors.map(\.id))
+        return discoveredPurifiers.values
+            .filter { $0.sensorID.map { !configured.contains($0) } ?? false }
+            .sorted { $0.name < $1.name }
+    }
 
     func color(for sensor: SensorConfig) -> Color {
         if let hex = sensor.colorHex, let picked = Color(hex: hex) { return picked }
@@ -122,7 +155,13 @@ final class AppModel: ObservableObject {
     }
 
     private func restoreLastReadings() {
-        for sensor in sensors {
+        for sensor in sensors where sensor.model.isAirPurifier {
+            guard let last = store.lastAir(sensor.id) else { continue }
+            air[sensor.id] = LiveAir(reading: AirReading(pm25: last.pm25, allergenIndex: last.allergenIndex),
+                                     updatedAt: Date(timeIntervalSince1970: TimeInterval(last.minute * 60)),
+                                     isFresh: false, status: .connecting)
+        }
+        for sensor in sensors where !sensor.model.isAirPurifier {
             guard let minute = store.lastMinute(sensor.id),
                   let point = store.series(sensor.id, from: minute, to: minute, bucketMinutes: 1).first else { continue }
             latest[sensor.id] = LiveReading(reading: Reading(tempC: point.tempC, humidity: point.humidity, battery: nil),
@@ -136,7 +175,7 @@ final class AppModel: ObservableObject {
         let advert = nearbySensor.advert
         let defaultName = advert.model.brand.displayName + " " + advert.model.displayName
         let sensor = SensorConfig(id: advert.id, name: defaultName, model: advert.model,
-                                  isMain: sensors.isEmpty, sort: (sensors.map(\.sort).max() ?? -1) + 1)
+                                  isMain: mainSensor == nil, sort: (sensors.map(\.sort).max() ?? -1) + 1)
         store.save(sensor)
         reloadSensors()
         if let reading = advert.reading {
@@ -165,10 +204,12 @@ final class AppModel: ObservableObject {
     }
 
     func remove(_ id: UUID) {
+        purifierClients.removeValue(forKey: id)?.stop()
         store.delete(id: id)
         latest[id] = nil
+        air[id] = nil
         reloadSensors()
-        if !sensors.isEmpty, !sensors.contains(where: \.isMain), let first = sensors.first {
+        if let first = mainSensor, !first.isMain {
             setMain(first.id)
         }
         dataVersion += 1
@@ -196,14 +237,19 @@ final class AppModel: ObservableObject {
 
     func exportCSV(_ id: UUID) {
         guard let sensor = sensors.first(where: { $0.id == id }) else { return }
+        let csv: String
+        if sensor.model.isAirPurifier {
+            csv = CSV.renderAir(store.aggregateAir(id, from: 0, to: Int.nowMinute(), bucketMinutes: 1), sensorName: sensor.name)
+        } else {
+            csv = CSV.render(store.series(id, from: 0, to: Int.nowMinute(), bucketMinutes: 1), sensorName: sensor.name)
+        }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.nameFieldStringValue = "\(sensor.name).csv"
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let points = store.series(id, from: 0, to: Int.nowMinute(), bucketMinutes: 1)
         do {
-            try CSV.render(points, sensorName: sensor.name).write(to: url, atomically: true, encoding: .utf8)
+            try csv.write(to: url, atomically: true, encoding: .utf8)
         } catch {
             NSAlert(error: error).runModal()
         }
@@ -223,7 +269,7 @@ final class AppModel: ObservableObject {
         lastSyncError = nil
         Task { @MainActor in
             var errors: [String] = []
-            for sensor in sensors {
+            for sensor in sensors where !sensor.model.isAirPurifier {
                 let now = Int.nowMinute()
                 guard let gapStart = store.oldestGapStart(sensor.id, now: now, windowMinutes: sensor.model.historyRetentionMinutes, minGap: 5) else { continue }
                 guard let seen = nearby[sensor.id], Date().timeIntervalSince(seen.seenAt) < 120 else {
@@ -258,6 +304,112 @@ final class AppModel: ObservableObject {
                 scheduleRetry()
             }
         }
+    }
+
+    // MARK: Air purifiers
+
+    /// Connects configured purifiers (cached address first, then discovery)
+    /// and records their PM2.5 every minute while they're reachable.
+    private func startPurifiers() {
+        for sensor in sensors where sensor.model.isAirPurifier {
+            if let host = UserDefaults.standard.string(forKey: Self.hostKey(sensor.id)) {
+                connectPurifier(sensor.id, host: host)
+            }
+        }
+        if hasPurifiers { discoverPurifiers() }
+        airTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.airTick() }
+        }
+    }
+
+    private static func hostKey(_ id: UUID) -> String { "purifierHost.\(id.uuidString)" }
+
+    /// Probes the LAN for purifiers; (re)connects configured ones at their current address.
+    func discoverPurifiers() {
+        guard !isDiscoveringPurifiers else { return }
+        isDiscoveringPurifiers = true
+        lastDiscovery = Date()
+        Task { @MainActor in
+            let found = await PhilipsDiscovery.discover()
+            isDiscoveringPurifiers = false
+            for info in found {
+                guard let id = info.sensorID else { continue }
+                discoveredPurifiers[id] = info
+                if sensors.contains(where: { $0.id == id }) {
+                    connectPurifier(id, host: info.host)
+                }
+            }
+        }
+    }
+
+    func addPurifier(_ info: PurifierInfo) {
+        guard let id = info.sensorID else { return }
+        // The purifier is usually named after its room, like a thermometer there.
+        let name = sensors.contains { $0.name == info.name } ? "\(info.name) purifier" : info.name
+        let sensor = SensorConfig(id: id, name: name, model: .philipsAir, isMain: false,
+                                  sort: (sensors.map(\.sort).max() ?? -1) + 1)
+        store.save(sensor)
+        reloadSensors()
+        connectPurifier(id, host: info.host)
+    }
+
+    private func connectPurifier(_ id: UUID, host: String) {
+        if let existing = purifierClients[id], existing.host == host { return }
+        purifierClients.removeValue(forKey: id)?.stop()
+        UserDefaults.standard.set(host, forKey: Self.hostKey(id))
+        let client = PhilipsClient(host: host)
+        client.onReading = { [weak self] reading in self?.handleAir(id, reading) }
+        client.onStatus = { [weak self] status in
+            guard let self else { return }
+            if var live = self.air[id] {
+                live.status = status
+                self.air[id] = live
+            } else if status != .connecting {
+                self.air[id] = LiveAir(reading: AirReading(), updatedAt: .distantPast, isFresh: false, status: status)
+            }
+            // The address may have changed (DHCP); look again.
+            if status == .unreachable { self.discoverPurifiers() }
+        }
+        purifierClients[id] = client
+        client.start()
+        log.info("purifier \(id.uuidString, privacy: .public) at \(host, privacy: .public)")
+    }
+
+    private func handleAir(_ id: UUID, _ reading: AirReading) {
+        var merged = air[id]?.reading ?? AirReading()
+        // A report may omit fields; keep what we knew.
+        merged.pm25 = reading.pm25 ?? merged.pm25
+        merged.allergenIndex = reading.allergenIndex ?? merged.allergenIndex
+        merged.isOn = reading.isOn ?? merged.isOn
+        merged.mode = reading.mode ?? merged.mode
+        merged.filterHoursLeft = reading.filterHoursLeft ?? merged.filterHoursLeft
+        merged.filterHoursTotal = reading.filterHoursTotal ?? merged.filterHoursTotal
+        merged.preFilterHoursLeft = reading.preFilterHoursLeft ?? merged.preFilterHoursLeft
+        merged.preFilterHoursTotal = reading.preFilterHoursTotal ?? merged.preFilterHoursTotal
+        air[id] = LiveAir(reading: merged, updatedAt: Date(), isFresh: true, status: .reachable)
+        storeAir(id, force: true)
+    }
+
+    /// The purifier only reports changes, so its last report holds until the
+    /// next one: record it every minute while the purifier is reachable.
+    private func airTick() {
+        var stored = false
+        for id in air.keys { stored = storeAir(id, force: false) || stored }
+        if stored { dataVersion += 1 }
+        let anyDown = sensors.contains { $0.model.isAirPurifier && air[$0.id]?.status != .reachable }
+        if anyDown, Date().timeIntervalSince(lastDiscovery ?? .distantPast) > 300 { discoverPurifiers() }
+    }
+
+    @discardableResult
+    private func storeAir(_ id: UUID, force: Bool) -> Bool {
+        guard let live = air[id], live.isFresh, live.status == .reachable,
+              let pm = live.reading.pm25, let iai = live.reading.allergenIndex else { return false }
+        let minute = Int.nowMinute()
+        guard force || lastAirMinute[id] != minute else { return false }
+        lastAirMinute[id] = minute
+        store.insertAir(id, minute: minute, pm25: pm, allergenIndex: iai)
+        if force { dataVersion += 1 }
+        return true
     }
 
     /// Weak links (a sensor in another room) often fail to connect once and

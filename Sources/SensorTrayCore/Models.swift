@@ -3,11 +3,13 @@ import Foundation
 public enum Brand: String, Codable, Sendable {
     case govee
     case thermopro
+    case philips
 
     public var displayName: String {
         switch self {
         case .govee: return "Govee"
         case .thermopro: return "ThermoPro"
+        case .philips: return "Philips"
         }
     }
 }
@@ -16,11 +18,14 @@ public enum SensorModel: String, Codable, Sendable, CaseIterable {
     case h5075
     case tp357
     case tp357s
+    /// Philips Air+ purifier over Wi-Fi (local CoAP); reports PM2.5, not climate.
+    case philipsAir
 
     public var brand: Brand {
         switch self {
         case .h5075: return .govee
         case .tp357, .tp357s: return .thermopro
+        case .philipsAir: return .philips
         }
     }
 
@@ -29,8 +34,12 @@ public enum SensorModel: String, Codable, Sendable, CaseIterable {
         case .h5075: return "H5075"
         case .tp357: return "TP357"
         case .tp357s: return "TP357S"
+        case .philipsAir: return "Air purifier"
         }
     }
+
+    /// Wi-Fi air purifier rather than a Bluetooth thermo-hygrometer.
+    public var isAirPurifier: Bool { self == .philipsAir }
 
     /// How far back the device's onboard memory reaches, i.e. the furthest a
     /// history backfill can usefully ask for.
@@ -39,6 +48,7 @@ public enum SensorModel: String, Codable, Sendable, CaseIterable {
         case .h5075: return 20 * 1440
         case .tp357: return 7 * 1440    // minute data for 24h, hourly for the week
         case .tp357s: return 20 * 1440
+        case .philipsAir: return 0       // no onboard history; recorded live only
         }
     }
 

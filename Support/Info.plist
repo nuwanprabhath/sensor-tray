@@ -4,6 +4,8 @@
 <dict>
     <key>CFBundleIdentifier</key><string>com.nuwan.sensor-tray</string>
     <key>CFBundleName</key><string>Sensor Tray</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Sensor Tray finds your Philips air purifier on the local network and reads its air quality.</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>Sensor Tray reads temperature and humidity from your Govee and ThermoPro sensors over Bluetooth.</string>
 </dict>

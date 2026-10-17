@@ -45,6 +45,8 @@ cat > "$DIST/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Sensor Tray finds your Philips air purifier on the local network and reads its air quality.</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>Sensor Tray reads temperature and humidity from your Govee and ThermoPro sensors over Bluetooth.</string>
 </dict>

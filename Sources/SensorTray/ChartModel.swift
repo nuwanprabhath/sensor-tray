@@ -1,10 +1,20 @@
 import Foundation
 import SensorTrayCore
 
+/// One bucket of the metric being charted: its average and range.
+struct ChartPoint: Equatable {
+    let minute: Int
+    let avg: Double
+    let low: Double
+    let high: Double
+
+    var date: Date { Date(timeIntervalSince1970: TimeInterval(minute * 60)) }
+}
+
 /// One sensor's line for the current window, ready to draw.
 struct ChartSeries: Equatable {
     let id: UUID
-    let points: [SeriesPoint]
+    let points: [ChartPoint]
     /// Parallel to `points`: a new number wherever data is missing for more
     /// than a few buckets, so lines break at gaps instead of bridging them.
     let segments: [Int]
@@ -13,6 +23,7 @@ struct ChartSeries: Equatable {
 /// Everything the chart needs for one window, computed off the main thread.
 struct ChartSnapshot: Equatable {
     let window: ChartWindow
+    let metric: ChartMetric
     /// Minutes covered by the x axis.
     let span: ClosedRange<Int>
     let bucketMinutes: Int
@@ -38,19 +49,28 @@ struct ChartSnapshot: Equatable {
 @MainActor
 final class ChartModel: ObservableObject {
     @Published private(set) var window: ChartWindow
+    @Published private(set) var metric: ChartMetric
     @Published private(set) var snapshot: ChartSnapshot?
-    /// Last 24 h per sensor at 10-minute resolution, for the card sparklines.
-    @Published private(set) var sparklines: [UUID: [SeriesPoint]] = [:]
+    /// Last 24 h per sensor at 10-minute resolution, for the card sparklines
+    /// (temperature for thermometers, PM2.5 for purifiers).
+    @Published private(set) var sparklines: [UUID: [ChartPoint]] = [:]
+
+    struct SensorRef: Equatable {
+        let id: UUID
+        let isAirPurifier: Bool
+    }
 
     private struct Request {
         let window: ChartWindow
-        let sensors: [UUID]
+        let metric: ChartMetric
+        let sensors: [SensorRef]
     }
 
     private static let rangeKey = "chartRange"
+    private static let metricKey = "chartMetric"
     private let reader: Store?
     private let queue = DispatchQueue(label: "com.nuwan.sensor-tray.charts", qos: .userInitiated)
-    private var sensorIDs: [UUID] = []
+    private var sensors: [SensorRef] = []
     private var inFlight = false
     private var pending: Request?
 
@@ -58,15 +78,26 @@ final class ChartModel: ObservableObject {
         self.reader = reader
         let saved = UserDefaults.standard.string(forKey: Self.rangeKey).flatMap(ChartRange.init(rawValue:))
         window = ChartWindow(range: saved ?? .day)
+        metric = UserDefaults.standard.string(forKey: Self.metricKey).flatMap(ChartMetric.init(rawValue:)) ?? .temperature
     }
 
     private var earliest: Int? { snapshot?.earliest }
 
     // MARK: Navigation
 
-    func setSensors(_ ids: [UUID]) {
-        guard ids != sensorIDs else { return }
-        sensorIDs = ids
+    func setSensors(_ configs: [SensorConfig]) {
+        let refs = configs.map { SensorRef(id: $0.id, isAirPurifier: $0.model.isAirPurifier) }
+        guard refs != sensors else { return }
+        sensors = refs
+        // PM2.5 needs a purifier; fall back if the last one was removed.
+        if metric == .pm25 && !refs.contains(where: \.isAirPurifier) { metric = .temperature }
+        reload()
+    }
+
+    func setMetric(_ newMetric: ChartMetric, persist: Bool = true) {
+        if persist { UserDefaults.standard.set(newMetric.rawValue, forKey: Self.metricKey) }
+        guard newMetric != metric else { return }
+        metric = newMetric
         reload()
     }
 
@@ -104,7 +135,7 @@ final class ChartModel: ObservableObject {
 
     /// Re-queries the current window and the sparklines (e.g. new readings).
     func reload() {
-        pending = Request(window: window, sensors: sensorIDs)
+        pending = Request(window: window, metric: metric, sensors: sensors)
         startNext()
     }
 
@@ -127,7 +158,7 @@ final class ChartModel: ObservableObject {
     }
 
     /// Runs on the background queue.
-    nonisolated private static func compute(_ request: Request, reader: Store) -> (ChartSnapshot, [UUID: [SeriesPoint]]) {
+    nonisolated private static func compute(_ request: Request, reader: Store) -> (ChartSnapshot, [UUID: [ChartPoint]]) {
         let now = Int.nowMinute()
         let earliest = reader.earliestMinute()
         let window = request.window
@@ -136,22 +167,39 @@ final class ChartModel: ObservableObject {
         // Local UTC offset, so day buckets run midnight to midnight.
         let offset = TimeZone.current.secondsFromGMT() / 60
 
-        let series = request.sensors.map { id -> ChartSeries in
-            let points = reader.aggregate(id, from: span.lowerBound, to: span.upperBound, bucketMinutes: bucket, alignOffset: offset)
-            return ChartSeries(id: id, points: points, segments: segments(points, bucket: bucket))
+        // Thermometers chart temperature/humidity; purifiers chart PM2.5.
+        let charted = request.sensors.filter { $0.isAirPurifier == (request.metric == .pm25) }
+        let series = charted.map { sensor -> ChartSeries in
+            let points = points(for: sensor, metric: request.metric, reader: reader,
+                                from: span.lowerBound, to: span.upperBound, bucket: bucket, offset: offset)
+            return ChartSeries(id: sensor.id, points: points, segments: segments(points, bucket: bucket))
         }
-        let snapshot = ChartSnapshot(window: window, span: span, bucketMinutes: bucket,
+        let snapshot = ChartSnapshot(window: window, metric: request.metric, span: span, bucketMinutes: bucket,
                                      showsBand: window.showsBand(now: now, earliest: earliest),
                                      series: series, earliest: earliest)
 
-        var sparklines: [UUID: [SeriesPoint]] = [:]
-        for id in request.sensors {
-            sparklines[id] = reader.aggregate(id, from: now - 1440, to: now, bucketMinutes: 10)
+        var sparklines: [UUID: [ChartPoint]] = [:]
+        for sensor in request.sensors {
+            sparklines[sensor.id] = points(for: sensor, metric: sensor.isAirPurifier ? .pm25 : .temperature, reader: reader,
+                                           from: now - 1440, to: now, bucket: 10, offset: 0)
         }
         return (snapshot, sparklines)
     }
 
-    nonisolated private static func segments(_ points: [SeriesPoint], bucket: Int) -> [Int] {
+    nonisolated private static func points(for sensor: SensorRef, metric: ChartMetric, reader: Store,
+                                           from: Int, to: Int, bucket: Int, offset: Int) -> [ChartPoint] {
+        if sensor.isAirPurifier {
+            return reader.aggregateAir(sensor.id, from: from, to: to, bucketMinutes: bucket, alignOffset: offset)
+                .map { ChartPoint(minute: $0.minute, avg: $0.pmAvg, low: $0.pmMin, high: $0.pmMax) }
+        }
+        let climate = reader.aggregate(sensor.id, from: from, to: to, bucketMinutes: bucket, alignOffset: offset)
+        switch metric {
+        case .humidity: return climate.map { ChartPoint(minute: $0.minute, avg: $0.humAvg, low: $0.humMin, high: $0.humMax) }
+        default: return climate.map { ChartPoint(minute: $0.minute, avg: $0.tempAvg, low: $0.tempMin, high: $0.tempMax) }
+        }
+    }
+
+    nonisolated private static func segments(_ points: [ChartPoint], bucket: Int) -> [Int] {
         var result: [Int] = []
         result.reserveCapacity(points.count)
         var segment = 0

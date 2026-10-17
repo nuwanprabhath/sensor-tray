@@ -5,7 +5,6 @@ import SwiftUI
 struct PopoverView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openWindow) private var openWindow
-    @AppStorage("chartMetric") private var metric: ChartMetric = .temperature
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -23,11 +22,15 @@ struct PopoverView: View {
             } else {
                 VStack(spacing: 8) {
                     ForEach(model.sensors) { sensor in
-                        SensorCard(sensor: sensor)
+                        if sensor.model.isAirPurifier {
+                            PurifierCard(sensor: sensor)
+                        } else {
+                            SensorCard(sensor: sensor)
+                        }
                     }
                 }
 
-                ChartPanel(charts: model.charts, metric: $metric)
+                ChartPanel(charts: model.charts)
             }
 
             footer
@@ -37,10 +40,10 @@ struct PopoverView: View {
         .onAppear {
             // Each opening starts at the present.
             model.charts.goLive()
-            model.charts.setSensors(model.sensors.map(\.id))
+            model.charts.setSensors(model.sensors)
             model.charts.reload()
         }
-        .onChange(of: model.sensors.map(\.id)) { _, ids in model.charts.setSensors(ids) }
+        .onChange(of: model.sensors) { _, sensors in model.charts.setSensors(sensors) }
         .onChange(of: model.dataVersion) { _, _ in model.charts.reload() }
     }
 
@@ -129,17 +132,16 @@ struct PopoverView: View {
 private struct ChartPanel: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var charts: ChartModel
-    @Binding var metric: ChartMetric
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Picker("Metric", selection: $metric) {
-                    ForEach(ChartMetric.allCases) { Image(systemName: $0.symbol).help($0.title).tag($0) }
+                Picker("Metric", selection: Binding(get: { charts.metric }, set: { charts.setMetric($0) })) {
+                    ForEach(metrics) { Image(systemName: $0.symbol).help($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 70)
+                .frame(width: CGFloat(metrics.count) * 32)
 
                 Spacer(minLength: 6)
 
@@ -148,14 +150,14 @@ private struct ChartPanel: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 236)
+                .frame(width: metrics.count > 2 ? 212 : 236)
             }
 
             navigator
 
             Group {
                 if let snapshot = charts.snapshot {
-                    HistoryChart(snapshot: snapshot, metric: metric, styles: styles, charts: charts)
+                    HistoryChart(snapshot: snapshot, metric: snapshot.metric, styles: styles, charts: charts)
                         .equatable()
                 } else {
                     Color.clear
@@ -166,6 +168,11 @@ private struct ChartPanel: View {
         }
         .padding(10)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// PM2.5 is offered only when an air purifier is added.
+    private var metrics: [ChartMetric] {
+        model.hasPurifiers ? ChartMetric.allCases : [.temperature, .humidity]
     }
 
     private var styles: [SeriesStyle] {

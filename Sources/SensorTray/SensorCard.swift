@@ -29,7 +29,7 @@ struct SensorCard: View {
                 }
                 HStack(spacing: 6) {
                     status(live)
-                    if let low = points.map(\.tempMin).min(), let high = points.map(\.tempMax).max() {
+                    if let low = points.map(\.low).min(), let high = points.map(\.high).max() {
                         Text(String(format: "24h %.1f–%.1f°C", low, high))
                             .help("Lowest and highest temperature in the last 24 hours")
                     }
@@ -115,8 +115,10 @@ struct BatteryBadge: View {
 
 /// Minimal line of the last 24h temperatures with a soft fill.
 struct Sparkline: View {
-    let points: [SeriesPoint]
+    let points: [ChartPoint]
     let color: Color
+    /// Smallest vertical range drawn, so small wobbles stay flat (0.5 °C; ~5 µg/m³ for PM2.5).
+    var minimumSpan: Double = 0.5
 
     var body: some View {
         GeometryReader { geo in
@@ -137,16 +139,16 @@ struct Sparkline: View {
     }
 
     private func linePath(in size: CGSize) -> Path {
-        let temps = points.map(\.tempAvg)
+        let temps = points.map(\.avg)
         let minT = temps.min() ?? 0
         let maxT = temps.max() ?? 1
-        let spanT = max(maxT - minT, 0.5)      // flat lines stay flat, not noisy
+        let spanT = max(maxT - minT, minimumSpan)      // flat lines stay flat, not noisy
         let minM = Double(points.first?.minute ?? 0)
         let spanM = max(Double((points.last?.minute ?? 1)) - minM, 1)
         var path = Path()
         for (i, p) in points.enumerated() {
             let x = (Double(p.minute) - minM) / spanM * size.width
-            let y = size.height - 2 - (p.tempAvg - minT) / spanT * (size.height - 4)
+            let y = size.height - 2 - (p.avg - minT) / spanT * (size.height - 4)
             if i == 0 { path.move(to: CGPoint(x: x, y: y)) } else { path.addLine(to: CGPoint(x: x, y: y)) }
         }
         return path

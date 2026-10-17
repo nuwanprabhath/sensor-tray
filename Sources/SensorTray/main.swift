@@ -8,6 +8,7 @@ import SensorTrayCore
 //   SensorTray --scan [seconds]           list nearby Govee/ThermoPro sensors with live readings
 //   SensorTray --history <uuid> [minutes] download a sensor's stored history (default 60 min)
 //   SensorTray --dump                     print configured sensors and stored data ranges
+//   SensorTray --purifier [seconds]       find Philips purifiers on the LAN and print their status updates
 //   SensorTray --snapshot <png> [light|dark] [sensors] [--range 1Y] render the popover (or Sensors window)
 //   SensorTray --generate-demo <db> [years]  synthetic multi-year database for UI/perf testing
 //   SENSORTRAY_DB=<db> SensorTray …          use another database (e.g. a demo or a copy of real data)
@@ -28,6 +29,8 @@ if arguments.contains("--scan") {
     MainActor.assumeIsolated { CLI.scan() }
 } else if arguments.contains("--history") {
     MainActor.assumeIsolated { CLI.history() }
+} else if arguments.contains("--purifier") {
+    MainActor.assumeIsolated { CLI.purifier() }
 } else if arguments.contains("--generate-demo") {
     try MainActor.assumeIsolated { try CLI.generateDemo() }
 } else if arguments.contains("--snapshot") {
@@ -201,6 +204,33 @@ enum CLI {
             }
         }
         print(String(format: "Wrote %@: %d sensors × %d minutes in %.1fs", path, rooms.count, total, Date().timeIntervalSince(started)))
+    }
+
+    static func purifier() {
+        let seconds = argument(after: "--purifier").flatMap(Double.init) ?? 60
+        var done = false
+        var client: PhilipsClient?
+        Task { @MainActor in
+            let found = await PhilipsDiscovery.discover()
+            guard let info = found.first else {
+                print("No Philips purifier answered on the local network.")
+                done = true
+                return
+            }
+            for p in found { print("Found \(p.name) (\(p.model)) at \(p.host), id \(p.sensorID?.uuidString ?? p.deviceID)") }
+            let c = PhilipsClient(host: info.host)
+            c.onStatus = { print("  status: \($0)") }
+            c.onReading = { r in
+                let filter = r.filterPercentLeft.map { "\($0)%" } ?? "?"
+                print("  \(Date().formatted(date: .omitted, time: .standard))  PM2.5 \(r.pm25.map(String.init) ?? "?") µg/m³  IAI \(r.allergenIndex.map(String.init) ?? "?")  \(r.isOn == true ? "on" : "off") · \(r.mode ?? "?")  filter \(filter)\(r.filterNeedsReplacing ? " (replace)" : "")")
+            }
+            c.start()
+            client = c
+            print("Observing for \(Int(seconds))s — the purifier only reports when a value changes.")
+        }
+        let end = Date().addingTimeInterval(seconds)
+        while !done && Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.2)) }
+        client?.stop()
     }
 
     static func dump() throws {

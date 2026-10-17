@@ -27,7 +27,13 @@ struct SensorsView: View {
 
             section("Nearby") {
                 let nearby = model.unconfiguredNearby
-                if nearby.isEmpty {
+                let purifiers = model.unconfiguredPurifiers
+                ForEach(Array(purifiers.enumerated()), id: \.element.deviceID) { index, info in
+                    if index > 0 { Divider() }
+                    PurifierRow(info: info)
+                }
+                if !purifiers.isEmpty && !nearby.isEmpty { Divider() }
+                if nearby.isEmpty && purifiers.isEmpty {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("Looking for Govee and ThermoPro sensors…")
@@ -43,6 +49,19 @@ struct SensorsView: View {
                 }
             }
 
+            HStack(spacing: 6) {
+                if model.isDiscoveringPurifiers {
+                    ProgressView().controlSize(.small)
+                    Text("Searching the network for air purifiers…")
+                } else {
+                    Button("Find air purifiers") { model.discoverPurifiers() }
+                        .buttonStyle(.link)
+                    Text("Philips Air+ purifiers on this Wi-Fi network")
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .font(.caption)
+
             HStack {
                 Toggle("Launch at login", isOn: $launchAtLogin.value)
                     .onChange(of: launchAtLogin.value) { _, enabled in
@@ -56,6 +75,7 @@ struct SensorsView: View {
         }
         .padding(20)
         .frame(width: 480)
+        .onAppear { model.discoverPurifiers() }
         .alert("Remove \(confirmRemove.value?.name ?? "sensor")?", isPresented: Binding(
             get: { confirmRemove.value != nil }, set: { if !$0 { confirmRemove.value = nil } }
         )) {
@@ -107,13 +127,18 @@ private struct ConfiguredRow: View {
 
             Spacer()
 
-            Button {
-                model.setMain(sensor.id)
-            } label: {
-                Image(systemName: sensor.isMain ? "star.fill" : "star")
-                    .foregroundStyle(sensor.isMain ? .yellow : .secondary)
+            if sensor.model.isAirPurifier {
+                // Keeps the columns aligned; purifiers can't be the menu bar sensor.
+                Image(systemName: "star").hidden()
+            } else {
+                Button {
+                    model.setMain(sensor.id)
+                } label: {
+                    Image(systemName: sensor.isMain ? "star.fill" : "star")
+                        .foregroundStyle(sensor.isMain ? .yellow : .secondary)
+                }
+                .help(sensor.isMain ? "Shown in the menu bar" : "Show in the menu bar")
             }
-            .help(sensor.isMain ? "Shown in the menu bar" : "Show in the menu bar")
 
             Button { model.move(sensor.id, by: -1) } label: { Image(systemName: "chevron.up") }
                 .disabled(index == 0)
@@ -136,6 +161,11 @@ private struct ConfiguredRow: View {
     }
 
     private var subtitle: String {
+        if sensor.model.isAirPurifier {
+            var parts = [model.discoveredPurifiers[sensor.id].map { "Philips \($0.model)" } ?? "Philips air purifier"]
+            if let pm = model.air[sensor.id]?.reading.pm25 { parts.append("PM2.5 \(pm) µg/m³") }
+            return parts.joined(separator: " · ")
+        }
         // The advertised name (e.g. "GVH5075_8D84") tells identical units apart.
         var parts = [model.nearby[sensor.id]?.advert.name ?? "\(sensor.model.brand.displayName) \(sensor.model.displayName)"]
         if let live = model.latest[sensor.id] {
@@ -175,6 +205,30 @@ private struct NearbyRow: View {
             parts.append(String(format: "%.1f°C · %.0f%%", r.tempC, r.humidity))
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+private struct PurifierRow: View {
+    @EnvironmentObject private var model: AppModel
+    let info: PurifierInfo
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wind")
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(info.name)
+                    .font(.system(size: 13, weight: .medium))
+                Text("Philips \(info.model) · Wi-Fi \(info.host)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Add") { model.addPurifier(info) }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        }
     }
 }
 

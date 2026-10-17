@@ -3,22 +3,46 @@ import Charts
 import SensorTrayCore
 import SwiftUI
 
-enum ChartMetric: String, CaseIterable, Identifiable {
-    case temperature, humidity
+enum ChartMetric: String, CaseIterable, Identifiable, Sendable {
+    case temperature, humidity, pm25
 
     var id: String { rawValue }
-    var symbol: String { self == .temperature ? "thermometer.medium" : "humidity" }
-    var title: String { self == .temperature ? "Temperature" : "Humidity" }
-    func average(_ p: SeriesPoint) -> Double { self == .temperature ? p.tempAvg : p.humAvg }
-    func low(_ p: SeriesPoint) -> Double { self == .temperature ? p.tempMin : p.humMin }
-    func high(_ p: SeriesPoint) -> Double { self == .temperature ? p.tempMax : p.humMax }
-    func format(_ v: Double) -> String { self == .temperature ? String(format: "%.1f°C", v) : String(format: "%.0f%%", v) }
+    var symbol: String {
+        switch self {
+        case .temperature: return "thermometer.medium"
+        case .humidity: return "humidity"
+        case .pm25: return "aqi.medium"
+        }
+    }
+    var title: String {
+        switch self {
+        case .temperature: return "Temperature"
+        case .humidity: return "Humidity"
+        case .pm25: return "PM2.5 (air purifiers)"
+        }
+    }
+    func format(_ v: Double) -> String {
+        switch self {
+        case .temperature: return String(format: "%.1f°C", v)
+        case .humidity: return String(format: "%.0f%%", v)
+        case .pm25: return String(format: "%.0f µg/m³", v)
+        }
+    }
     /// Axis ticks: drop the decimal when the tick is whole (24°C, not 24.0°C).
     func axisFormat(_ v: Double) -> String {
         let whole = v.rounded() == v
         switch self {
         case .temperature: return String(format: whole ? "%.0f°C" : "%.1f°C", v)
         case .humidity: return String(format: whole ? "%.0f%%" : "%.1f%%", v)
+        case .pm25: return String(format: whole ? "%.0f µg" : "%.1f µg", v)
+        }
+    }
+    /// Day-range read-out in the tooltip, e.g. "18.2–24.9°C".
+    func range(_ low: Double, _ high: Double) -> String {
+        switch self {
+        case .temperature: return String(format: "%.1f–%.1f°C", low, high)
+        case .humidity: return String(format: "%.0f–%.0f%%", low, high)
+        case .pm25: return String(format: "%.0f–%.0f µg/m³", low, high)
         }
     }
 }
@@ -126,7 +150,7 @@ struct HistoryChart: View, Equatable {
             let sensor = series.id.uuidString
             for (i, p) in series.points.enumerated() {
                 marks.append(Mark(id: marks.count, sensor: sensor, segment: "\(sensor)-\(series.segments[i])",
-                                  date: p.date, value: metric.average(p), low: metric.low(p), high: metric.high(p)))
+                                  date: p.date, value: p.avg, low: p.low, high: p.high))
             }
         }
         return marks
@@ -225,7 +249,7 @@ private struct ChartInteractionLayer: View {
     }
 
     /// Binary search over points sorted by minute.
-    static func nearest(_ points: [SeriesPoint], to minute: Int) -> SeriesPoint? {
+    static func nearest(_ points: [ChartPoint], to minute: Int) -> ChartPoint? {
         guard !points.isEmpty else { return nil }
         var low = 0, high = points.count - 1
         while low < high {
@@ -251,10 +275,9 @@ private struct ChartInteractionLayer: View {
                         Circle().fill(style.color).frame(width: 6, height: 6)
                         Text(style.name).lineLimit(1)
                         Spacer(minLength: 6)
-                        Text(metric.format(metric.average(p))).monospacedDigit()
+                        Text(metric.format(p.avg)).monospacedDigit()
                         if daily {
-                            // The day's range, e.g. "18.2–24.9°C".
-                            Text(String(format: "%.1f–", metric.low(p)) + metric.format(metric.high(p)))
+                            Text(metric.range(p.low, p.high))
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
                         }

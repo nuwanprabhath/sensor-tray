@@ -249,7 +249,7 @@ do {
     sqlite3_close(db)
 
     let store = try Store(path: path)
-    check(store.userVersion == 2, "migration sets user_version")
+    check(store.userVersion == Store.schemaVersion, "migration sets user_version")
     let sensors = store.sensors()
     check(sensors.map(\.name) == ["Living room", "Bedroom"], "migration keeps sensors \(sensors.map(\.name))")
     check(sensors.first?.colorHex == "#FF8800" && sensors.first?.isMain == true, "migration keeps color and main")
@@ -421,6 +421,108 @@ do {
     let growth = residentMB() - before
     print(String(format: "  perf: memory growth over 1,800 chart loads: %.1f MB", growth))
     check(growth < 8, "no memory growth across repeated loads (\(growth) MB)")
+}
+
+// MARK: - Philips purifier protocol
+
+do {
+    // Exact datagrams the reference client exchanged with the AC0850/70.
+    let sync = PhilipsProtocol.syncRequest(messageID: 0x9181, token: hex("0e60fc23"), nonce: "EE9AC9DA")
+    check(sync == hex("540291810e60fc23b3737973036465760473796e63ff4545394143394441"), "philips sync bytes")
+    let observe = PhilipsProtocol.observeStatusRequest(messageID: 0x9182, token: hex("a44fcf36"))
+    check(observe == hex("54019182a44fcf3660537379730364657606737461747573"), "philips observe bytes")
+    check(PhilipsProtocol.ping(messageID: 0x1234) == [0x40, 0x00, 0x12, 0x34], "philips ping")
+    check(PhilipsProtocol.ack(messageID: 0x1234) == [0x60, 0x00, 0x12, 0x34], "philips ack")
+
+    let parsed = PhilipsProtocol.decode(observe)
+    check(parsed?.type == .nonConfirmable && parsed?.code == 0x01 && parsed?.token == hex("a44fcf36"), "coap decode header")
+    check(parsed?.options.map(\.number) == [6, 11, 11, 11] && parsed?.options.last?.value == Array("status".utf8), "coap decode options")
+    check(PhilipsProtocol.decode(sync)?.payload == Array("EE9AC9DA".utf8), "coap decode payload")
+    // A notification header like the device's: NON 2.05, Observe=1, Content-Format 50, Max-Age 60.
+    let note = PhilipsProtocol.encode(.init(type: .nonConfirmable, code: 0x45, messageID: 22, token: hex("a44fcf36"),
+                                            options: [.init(number: 6, value: [1]), .init(number: 12, value: [50]), .init(number: 14, value: [60])],
+                                            payload: Array("ABC".utf8)))
+    let n = PhilipsProtocol.decode(note)
+    check(n?.isContent == true && n?.options.map(\.number) == [6, 12, 14] && n?.payload == Array("ABC".utf8), "coap notification roundtrip")
+    let longOption = PhilipsProtocol.encode(.init(type: .confirmable, code: 1, messageID: 1, options: [.init(number: 300, value: Array(repeating: 7, count: 20))]))
+    check(PhilipsProtocol.decode(longOption)?.options.first.map { $0.number == 300 && $0.value.count == 20 } == true, "coap extended option delta/length")
+    check(PhilipsProtocol.decode([0x80, 0, 0, 0]) == nil && PhilipsProtocol.decode([0x40]) == nil, "coap rejects garbage")
+
+    // Encrypted with the reference implementation (aioairctrl's scheme).
+    let vector = "2174F9BA9709147C7A7B459FD0520E72676B8A0FBC0DC366081F81602EF5E3F522DA45E22899FA4218C194948E2A9CFA7A0D5791578C21C81B04FAA6EDFD95C0E0594F91F39AE2CB5DBE9F9B8335B424792CBCCE8EF6AB8A6A52E95544CA0037B68A51E4D4805C89BC8AE1CEA5876AD880EC7E882D1DE3C508BB90D166780C3582C2D9AF88B24CBF4AFFFC15557FD39326DC164746CF35CF5B9AD8B920E3A61ACD62C6CEC40E91DA1F304D9085E537D79E6ED84D86E054637A0417C1EEBF26B3CA7BAE8627CF4B66D552598B51C11A579D3D9648E159678D23294DDC83D1396457A4CA4E"
+    let json = try? PhilipsProtocol.decrypt(vector)
+    check(json?.hasPrefix("{\"state\":{\"reported\":{\"D01-03\":\"Bedroom\"") == true, "philips decrypt \(json ?? "nil")")
+    var tampered = Array(vector.utf8)
+    tampered[20] = tampered[20] == UInt8(ascii: "A") ? UInt8(ascii: "B") : UInt8(ascii: "A")
+    check((try? PhilipsProtocol.decrypt(String(decoding: tampered, as: UTF8.self))) == nil, "philips rejects bad digest")
+    check((try? PhilipsProtocol.decrypt("1234")) == nil, "philips rejects short payload")
+
+    let reading = json.flatMap(PhilipsProtocol.parseStatus)
+    check(reading?.pm25 == 4 && reading?.allergenIndex == 1 && reading?.isOn == true && reading?.mode == "Sleep", "philips status fields \(String(describing: reading))")
+    check(reading?.filterHoursLeft == 0 && reading?.filterHoursTotal == 4800 && reading?.filterNeedsReplacing == true, "philips filter")
+    check(reading?.preFilterHoursLeft == 720 && reading?.preFilterHoursTotal == 720 && reading?.filterPercentLeft == 0, "philips pre-filter")
+
+    // Real (decrypted) status from the AC0850/70, trimmed.
+    let real = #"{"state":{"reported":{"D01-03":"Bedroom","D01-05":"AC0850/70","WifiVersion":"AWS_Philips_AIR@91.1","D03-02":"ON","D03-03":false,"D03-04":0,"D03-11":"A","D03-12":"Auto General","D03-32":1,"D03-33":1,"D03-42":"PM2.5","D03-44":4,"D05-02":"A3","D05-07":720,"D05-08":4800,"D05-13":720,"D05-14":0},"desired":null}}"#
+    let r = PhilipsProtocol.parseStatus(real)
+    check(r?.pm25 == 1 && r?.allergenIndex == 1 && r?.mode == "Auto General", "philips real status \(String(describing: r))")
+
+    let info = PhilipsProtocol.parseInfo(#"{"product_id":"918eab40cc3e11eca3f10217247a73aa","device_id":"ed8a883f5dbc11eea847f5bb07155e75","D01-03":"Bedroom","D01-04":"Pluto","D01-05":"AC0850/70","D01-21":"0.0.0","option":"1"}"#, host: "10.0.0.114")
+    check(info?.name == "Bedroom" && info?.model == "AC0850/70" && info?.host == "10.0.0.114", "philips info")
+    check(info?.sensorID?.uuidString == "ED8A883F-5DBC-11EE-A847-F5BB07155E75", "philips device id → uuid")
+    check(PhilipsProtocol.uuid(forDeviceID: "xyz") == nil, "philips bad device id")
+}
+
+// MARK: - Air storage
+
+do {
+    let path = NSTemporaryDirectory() + "sensortray-air-\(UUID().uuidString).sqlite"
+    defer { removeDatabase(path) }
+    let store = try Store(path: path)
+    let p = UUID()
+    store.save(SensorConfig(id: p, name: "Bedroom", model: .philipsAir, isMain: false, sort: 0))
+    let base = 2_000_040
+    for m in 0..<120 { store.insertAir(p, minute: base + m, pm25: m < 60 ? 2 : 10, allergenIndex: m < 60 ? 1 : 3) }
+    let hours = store.aggregateAir(p, from: base, to: base + 119, bucketMinutes: 60)
+    check(hours.count == 2 && near(hours[0].pmAvg, 2) && near(hours[1].pmAvg, 10) && near(hours[1].iaiMax, 3), "air hourly rollup \(hours)")
+    let fine = store.aggregateAir(p, from: base, to: base + 119, bucketMinutes: 30)
+    check(fine.count == 4 && fine.allSatisfy { $0.count == 30 }, "air minute buckets")
+    check(store.lastAir(p).map { $0.minute == base + 119 && $0.pm25 == 10 } == true, "air last reading")
+    store.insertAir(p, minute: base + 119, pm25: 50, allergenIndex: 9)
+    check(store.aggregateAir(p, from: base + 60, to: base + 119, bucketMinutes: 60).first.map { near($0.pmMax, 50) } == true, "air overwrite updates rollup")
+    check(store.earliestMinute() == base, "earliest includes air")
+    check(store.aggregate(p, from: base, to: base + 119, bucketMinutes: 60).isEmpty, "air not mixed into climate")
+    store.delete(id: p)
+    check(store.aggregateAir(p, from: base, to: base + 119, bucketMinutes: 1).isEmpty && store.earliestMinute() == nil, "air deleted with sensor")
+}
+
+// MARK: - Schema v2 → v3
+
+do {
+    let path = NSTemporaryDirectory() + "sensortray-v2-\(UUID().uuidString).sqlite"
+    defer { removeDatabase(path) }
+    var db: OpaquePointer?
+    sqlite3_open(path, &db)
+    sqlite3_exec(db, """
+        CREATE TABLE sensors(key INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, name TEXT NOT NULL, model TEXT NOT NULL,
+            is_main INTEGER NOT NULL DEFAULT 0, sort INTEGER NOT NULL DEFAULT 0, synced_through INTEGER, color TEXT, added_at INTEGER NOT NULL);
+        CREATE TABLE samples(sensor INTEGER NOT NULL, minute INTEGER NOT NULL, t INTEGER NOT NULL, h INTEGER NOT NULL,
+            src INTEGER NOT NULL, PRIMARY KEY(sensor, minute)) WITHOUT ROWID;
+        CREATE TABLE hourly(sensor INTEGER NOT NULL, hour INTEGER NOT NULL, n INTEGER NOT NULL, t_sum INTEGER NOT NULL,
+            t_min INTEGER NOT NULL, t_max INTEGER NOT NULL, h_sum INTEGER NOT NULL, h_min INTEGER NOT NULL, h_max INTEGER NOT NULL,
+            PRIMARY KEY(sensor, hour)) WITHOUT ROWID;
+        INSERT INTO sensors(id, name, model, added_at) VALUES('\(UUID().uuidString)', 'Kept', 'h5075', 1);
+        INSERT INTO samples VALUES(1, 600, 215, 500, 0);
+        PRAGMA user_version = 2;
+        """, nil, nil, nil)
+    sqlite3_close(db)
+    let store = try Store(path: path)
+    check(store.userVersion == 3 && store.sensors().first?.name == "Kept", "v2 → v3 keeps data")
+    if let kept = store.sensors().first {
+        check(near(store.series(kept.id, from: 0, to: 1000, bucketMinutes: 1).first?.tempC, 21.5), "v2 → v3 keeps samples")
+        store.insertAir(kept.id, minute: 601, pm25: 3, allergenIndex: 1)
+        check(store.lastAir(kept.id)?.pm25 == 3, "v3 air tables usable")
+    }
 }
 
 // MARK: - CSV

@@ -111,6 +111,7 @@ final class BLECentral: NSObject, CBCentralManagerDelegate {
             switch model.brand {
             case .govee: reading = GoveeProtocol.parseAdvert(manufacturerData: bytes)
             case .thermopro: reading = ThermoProProtocol.parseAdvert(manufacturerData: bytes)
+            case .philips: return   // not a Bluetooth device
             }
             // Name-less packets get a placeholder until the scan response shows up.
             let displayName = name.isEmpty ? "\(model.brand.displayName) \(model.displayName)" : name

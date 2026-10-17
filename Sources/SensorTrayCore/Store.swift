@@ -12,6 +12,9 @@ import SQLite3
 ///   every write, so month/year/all-time charts read 8,760 rows per year
 ///   instead of 525,600.
 ///
+/// - `air` / `air_hourly`: the same pair for air purifiers (PM2.5 in µg/m³ and
+///   the 1–12 allergen index, both integers).
+///
 /// Live samples always win over backfilled ones for the same minute.
 ///
 /// Each instance owns one connection and is not thread-safe; confine it to
@@ -21,7 +24,7 @@ import SQLite3
 public final class Store: @unchecked Sendable {
     public enum StoreError: Error { case open(String), sql(String) }
 
-    public static let schemaVersion: Int32 = 2
+    public static let schemaVersion: Int32 = 3
 
     private var db: OpaquePointer?
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -90,14 +93,47 @@ public final class Store: @unchecked Sendable {
         ) WITHOUT ROWID;
         """
 
-    /// Creates schema v2, upgrading a v1 database (TEXT sensor ids, REAL
-    /// values, no rollup) in one transaction.
+    private static let schemaV3 = """
+        CREATE TABLE IF NOT EXISTS air(
+            sensor INTEGER NOT NULL,
+            minute INTEGER NOT NULL,
+            pm INTEGER NOT NULL,      -- PM2.5 µg/m³
+            iai INTEGER NOT NULL,     -- allergen index 1–12
+            PRIMARY KEY(sensor, minute)
+        ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS air_hourly(
+            sensor INTEGER NOT NULL,
+            hour INTEGER NOT NULL,
+            n INTEGER NOT NULL,
+            pm_sum INTEGER NOT NULL, pm_min INTEGER NOT NULL, pm_max INTEGER NOT NULL,
+            iai_sum INTEGER NOT NULL, iai_min INTEGER NOT NULL, iai_max INTEGER NOT NULL,
+            PRIMARY KEY(sensor, hour)
+        ) WITHOUT ROWID;
+        """
+
+    /// Brings any database up to the current schema, one transaction:
+    /// v1 (TEXT sensor ids, REAL values, no rollup) → v2 → v3 (air tables).
     private func migrate() throws {
         try exec("PRAGMA journal_mode=WAL")
-        guard userVersion < Self.schemaVersion else { return }
+        let version = userVersion
+        guard version < Self.schemaVersion else { return }
 
         let fromV1 = tableExists("readings")
         try exec("BEGIN IMMEDIATE")
+        do {
+            if version < 2 { try migrateToV2(fromV1: fromV1) }
+            try exec(Self.schemaV3)
+            try exec("PRAGMA user_version = \(Self.schemaVersion)")
+            try exec("COMMIT")
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
+        // Hand the space the bulkier v1 rows used back to the filesystem.
+        if fromV1 { try? exec("VACUUM") }
+    }
+
+    private func migrateToV2(fromV1: Bool) throws {
         do {
             if tableExists("sensors") {
                 // 0.1.0 databases predate the color column; ignore "duplicate column".
@@ -124,14 +160,7 @@ public final class Store: @unchecked Sendable {
                     FROM samples GROUP BY sensor, minute / 60;
                     """)
             }
-            try exec("PRAGMA user_version = \(Self.schemaVersion)")
-            try exec("COMMIT")
-        } catch {
-            try? exec("ROLLBACK")
-            throw error
         }
-        // Hand the space the bulkier v1 rows used back to the filesystem.
-        if fromV1 { try? exec("VACUUM") }
     }
 
     private func tableExists(_ name: String) -> Bool {
@@ -170,6 +199,8 @@ public final class Store: @unchecked Sendable {
     public func delete(id: UUID) {
         run("DELETE FROM samples WHERE sensor = \(Self.key)", [id.uuidString])
         run("DELETE FROM hourly WHERE sensor = \(Self.key)", [id.uuidString])
+        run("DELETE FROM air WHERE sensor = \(Self.key)", [id.uuidString])
+        run("DELETE FROM air_hourly WHERE sensor = \(Self.key)", [id.uuidString])
         run("DELETE FROM sensors WHERE id = ?", [id.uuidString])
     }
 
@@ -244,32 +275,73 @@ public final class Store: @unchecked Sendable {
     /// boundaries so day buckets run midnight to midnight local time; with the
     /// rollup it's rounded to whole hours.
     public func aggregate(_ id: UUID, from: Int, to: Int, bucketMinutes: Int, alignOffset: Int = 0) -> [SeriesPoint] {
+        bucketed(Self.climateTables, id, from: from, to: to, bucketMinutes: bucketMinutes, alignOffset: alignOffset) { s in
+            SeriesPoint(minute: Int(sqlite3_column_int64(s, 0)), count: Int(sqlite3_column_int64(s, 1)),
+                        tempAvg: sqlite3_column_double(s, 2) / 10, tempMin: sqlite3_column_double(s, 3) / 10,
+                        tempMax: sqlite3_column_double(s, 4) / 10, humAvg: sqlite3_column_double(s, 5) / 10,
+                        humMin: sqlite3_column_double(s, 6) / 10, humMax: sqlite3_column_double(s, 7) / 10)
+        }
+    }
+
+    /// Air purifier counterpart of `aggregate`: PM2.5 and allergen index per bucket.
+    public func aggregateAir(_ id: UUID, from: Int, to: Int, bucketMinutes: Int, alignOffset: Int = 0) -> [AirPoint] {
+        bucketed(Self.airTables, id, from: from, to: to, bucketMinutes: bucketMinutes, alignOffset: alignOffset) { s in
+            AirPoint(minute: Int(sqlite3_column_int64(s, 0)), count: Int(sqlite3_column_int64(s, 1)),
+                     pmAvg: sqlite3_column_double(s, 2), pmMin: sqlite3_column_double(s, 3), pmMax: sqlite3_column_double(s, 4),
+                     iaiAvg: sqlite3_column_double(s, 5), iaiMin: sqlite3_column_double(s, 6), iaiMax: sqlite3_column_double(s, 7))
+        }
+    }
+
+    /// Table and column names of one "two values per minute + hourly rollup" family.
+    private struct Tables {
+        let samples: String, hourly: String, a: String, b: String
+    }
+    private static let climateTables = Tables(samples: "samples", hourly: "hourly", a: "t", b: "h")
+    private static let airTables = Tables(samples: "air", hourly: "air_hourly", a: "pm", b: "iai")
+
+    /// Rows of (bucket start, count, a avg/min/max, b avg/min/max).
+    private func bucketed<T>(_ t: Tables, _ id: UUID, from: Int, to: Int, bucketMinutes: Int, alignOffset: Int,
+                             row: (OpaquePointer) -> T?) -> [T] {
         let b = max(1, bucketMinutes)
         if b >= 60 && b % 60 == 0 {
             let offset = alignOffset - alignOffset % 60
             let sql = """
                 SELECT ((hour * 60 + \(offset)) / \(b)) * \(b) - \(offset), SUM(n),
-                       SUM(t_sum) * 1.0 / SUM(n), MIN(t_min), MAX(t_max),
-                       SUM(h_sum) * 1.0 / SUM(n), MIN(h_min), MAX(h_max)
-                FROM hourly WHERE sensor = \(Self.key) AND hour BETWEEN ? AND ?
+                       SUM(\(t.a)_sum) * 1.0 / SUM(n), MIN(\(t.a)_min), MAX(\(t.a)_max),
+                       SUM(\(t.b)_sum) * 1.0 / SUM(n), MIN(\(t.b)_min), MAX(\(t.b)_max)
+                FROM \(t.hourly) WHERE sensor = \(Self.key) AND hour BETWEEN ? AND ?
                 GROUP BY (hour * 60 + \(offset)) / \(b) ORDER BY 1
                 """
-            return query(sql, [id.uuidString, from / 60, to / 60], row: Self.seriesPoint)
+            return query(sql, [id.uuidString, from / 60, to / 60], row: row)
         }
         let sql = """
             SELECT ((minute + \(alignOffset)) / \(b)) * \(b) - \(alignOffset), COUNT(*),
-                   AVG(t), MIN(t), MAX(t), AVG(h), MIN(h), MAX(h)
-            FROM samples WHERE sensor = \(Self.key) AND minute BETWEEN ? AND ?
+                   AVG(\(t.a)), MIN(\(t.a)), MAX(\(t.a)), AVG(\(t.b)), MIN(\(t.b)), MAX(\(t.b))
+            FROM \(t.samples) WHERE sensor = \(Self.key) AND minute BETWEEN ? AND ?
             GROUP BY (minute + \(alignOffset)) / \(b) ORDER BY 1
             """
-        return query(sql, [id.uuidString, from, to], row: Self.seriesPoint)
+        return query(sql, [id.uuidString, from, to], row: row)
     }
 
-    private static func seriesPoint(_ s: OpaquePointer) -> SeriesPoint? {
-        SeriesPoint(minute: Int(sqlite3_column_int64(s, 0)), count: Int(sqlite3_column_int64(s, 1)),
-                    tempAvg: sqlite3_column_double(s, 2) / 10, tempMin: sqlite3_column_double(s, 3) / 10,
-                    tempMax: sqlite3_column_double(s, 4) / 10, humAvg: sqlite3_column_double(s, 5) / 10,
-                    humMin: sqlite3_column_double(s, 6) / 10, humMax: sqlite3_column_double(s, 7) / 10)
+    // MARK: Air purifier readings
+
+    /// One minute of purifier data (the app carries the last report forward
+    /// each minute while the purifier is reachable, since it only reports changes).
+    public func insertAir(_ id: UUID, minute: Int, pm25: Int, allergenIndex: Int) {
+        run("INSERT OR REPLACE INTO air VALUES(\(Self.key), ?, ?, ?)", [id.uuidString, minute, pm25, allergenIndex])
+        run("""
+            INSERT OR REPLACE INTO air_hourly
+            SELECT sensor, minute / 60, COUNT(*), SUM(pm), MIN(pm), MAX(pm), SUM(iai), MIN(iai), MAX(iai)
+            FROM air WHERE sensor = \(Self.key) AND minute BETWEEN ? AND ?
+            GROUP BY minute / 60
+            """, [id.uuidString, minute / 60 * 60, minute / 60 * 60 + 59])
+    }
+
+    /// Most recent stored purifier minute: (minute, PM2.5, allergen index).
+    public func lastAir(_ id: UUID) -> (minute: Int, pm25: Int, allergenIndex: Int)? {
+        query("SELECT minute, pm, iai FROM air WHERE sensor = \(Self.key) ORDER BY minute DESC LIMIT 1", [id.uuidString]) { s in
+            (Int(sqlite3_column_int64(s, 0)), Int(sqlite3_column_int64(s, 1)), Int(sqlite3_column_int64(s, 2)))
+        }.first
     }
 
     public func firstMinute(_ id: UUID) -> Int? {
@@ -280,9 +352,13 @@ public final class Store: @unchecked Sendable {
         optionalInt("SELECT MAX(minute) FROM samples WHERE sensor = \(Self.key)", [id.uuidString])
     }
 
-    /// Oldest reading of any configured sensor (each lookup uses the primary key).
+    /// Oldest reading of any configured sensor or purifier (each lookup uses a primary key).
     public func earliestMinute() -> Int? {
-        optionalInt("SELECT MIN((SELECT MIN(minute) FROM samples WHERE sensor = s.key)) FROM sensors s")
+        optionalInt("""
+            SELECT MIN(MIN(IFNULL((SELECT MIN(minute) FROM samples WHERE sensor = s.key), 9223372036854775807),
+                           IFNULL((SELECT MIN(minute) FROM air WHERE sensor = s.key), 9223372036854775807)))
+            FROM sensors s
+            """).flatMap { $0 == Int.max ? nil : $0 }
     }
 
     public func sampleCount(_ id: UUID) -> Int {

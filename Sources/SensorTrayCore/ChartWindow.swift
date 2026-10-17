@@ -47,6 +47,29 @@ public struct SeriesPoint: Equatable, Sendable {
     public var date: Date { Date(timeIntervalSince1970: TimeInterval(minute * 60)) }
 }
 
+/// One aggregated purifier point: PM2.5 (µg/m³) and allergen index per bucket.
+public struct AirPoint: Equatable, Sendable {
+    public var minute: Int
+    public var count: Int
+    public var pmAvg: Double
+    public var pmMin: Double
+    public var pmMax: Double
+    public var iaiAvg: Double
+    public var iaiMin: Double
+    public var iaiMax: Double
+
+    public init(minute: Int, count: Int, pmAvg: Double, pmMin: Double, pmMax: Double, iaiAvg: Double, iaiMin: Double, iaiMax: Double) {
+        self.minute = minute
+        self.count = count
+        self.pmAvg = pmAvg
+        self.pmMin = pmMin
+        self.pmMax = pmMax
+        self.iaiAvg = iaiAvg
+        self.iaiMin = iaiMin
+        self.iaiMax = iaiMax
+    }
+}
+
 /// The slice of time the chart shows: a range length plus where it ends.
 /// Pure value logic (no clock, no I/O) so it's directly testable; callers
 /// pass `now` and the earliest stored minute.

@@ -1,6 +1,6 @@
 # sensor-tray
 
-A native macOS menu bar app for Bluetooth thermo-hygrometers. It shows the temperature and humidity of your main sensor in the menu bar, and a click opens every sensor with a chart of its history. It replaces juggling the Govee and ThermoPro phone apps.
+A native macOS menu bar app for Bluetooth thermo-hygrometers and Wi-Fi air purifiers. It shows the temperature and humidity of your main sensor in the menu bar, and a click opens every sensor with a chart of its history. It replaces juggling the Govee and ThermoPro phone apps.
 
 <p align="center">
   <img src="docs/screenshot-dark.png" alt="Sensor Tray popover showing two sensor cards with live temperature, humidity and 24-hour sparklines, above a combined temperature chart" width="360">
@@ -13,6 +13,7 @@ A native macOS menu bar app for Bluetooth thermo-hygrometers. It shows the tempe
 | Govee | H5075, H5072 | ✓ (advertisements, every few seconds) | ✓ 20 days, minute resolution |
 | ThermoPro | TP357S | ✓ | ✓ 20 days, minute resolution |
 | ThermoPro | TP357 / other TP3xx | ✓ | ✓ 24 h by minute + 7 days hourly |
+| Philips (Air+ app) | AC0850/70 (800i), likely other Air+ CoAP models | ✓ PM2.5, allergen index, mode, filter life, over Wi-Fi | recorded by the app every minute |
 
 You can add as many sensors of these models as you like and name them.
 
@@ -22,6 +23,7 @@ You can add as many sensors of these models as you like and name them.
 - **Popover**: a card per sensor (temperature, humidity, battery, 24 h min–max and a sparkline) and a combined chart with a temperature/humidity toggle and a hover read-out. Gaps (Mac asleep, sensor out of range) show as breaks in the line, not misleading straight bridges.
 - **History for as long as you run it**: every minute reading is kept, with no expiry. Choose **6H / 24H / 7D / 30D / 1Y / All**, then step back with **‹ ›**, drag the chart, or swipe sideways on the trackpad to move through time; **Now** jumps back to the present. At 1Y and All, each sensor also gets a shaded daily min–max band, so seasonal changes stand out.
 - **History backfill**: on launch, on wake, every 6 hours and on demand, the app connects briefly to each sensor and downloads only the stretch of its onboard memory that's missing locally, then disconnects so the phone apps keep working. If a sensor doesn't connect (weak signal), it retries 10 minutes later.
+- **Air purifiers**: Philips Air+ purifiers are read locally over Wi-Fi, without the Philips cloud or your Philips account. A card shows PM2.5 with an air-quality level (Good / Fair / Poor / Very poor), the allergen index, the mode, and filter warnings ("Replace the filter"), and the chart gets a PM2.5 view. It's read-only; Sensor Tray never changes the purifier's settings.
 - **Sensors window**: add nearby sensors (with signal bars, so you can tell which is which), rename, pick each sensor's color (click its dot), reorder, choose the menu bar sensor, export history as CSV, and remove. It also has a launch-at-login toggle.
 - Live data is read passively from Bluetooth advertisements, so no pairing is needed. Everything stays on this Mac in `~/Library/Application Support/SensorTray/sensortray.sqlite`, at about 8 MB per sensor per year.
 
@@ -51,8 +53,8 @@ You can add as many sensors of these models as you like and name them.
    ```sh
    xattr -dr com.apple.quarantine "/Applications/Sensor Tray.app"
    ```
-3. Allow **Bluetooth** when asked. A thermometer and reading appear in the menu bar.
-4. Click it → **Sensors…** → **Add** your sensors under *Nearby*, and name them. History from the sensors' memory downloads in the background (about a minute per sensor).
+3. Allow **Bluetooth** when asked, and **Local Network** if you have an air purifier. A thermometer and reading appear in the menu bar.
+4. Click it → **Sensors…** → **Add** your sensors (and purifiers) under *Nearby*, and name them. History from the sensors' memory downloads in the background (about a minute per sensor).
 
 To start it at login, turn on **Launch at login** in the Sensors window.
 
@@ -83,6 +85,7 @@ The same binary doubles as a test tool:
 .build/release/SensorTray --scan [seconds]            # list nearby sensors with live readings + advert counts
 .build/release/SensorTray --history <uuid> [minutes]  # download a sensor's onboard history
 .build/release/SensorTray --dump                      # configured sensors and stored data
+.build/release/SensorTray --purifier [seconds]        # find Philips purifiers and print their status updates
 .build/release/SensorTray --generate-demo /tmp/demo.sqlite 2   # 2 years of synthetic minute data
 SENSORTRAY_DB=/tmp/demo.sqlite .build/release/SensorTray        # run the app (or any flag) against it
 .build/release/SensorTray --snapshot docs/screenshot-dark.png dark [sensors] [--range 1Y]   # render the UI to PNG
@@ -96,4 +99,11 @@ swift run SensorTrayChecks                            # protocol, storage, migra
 
 - **Govee H5075** advertises two manufacturer records, `88 EC 00 T2 T1 T0 BB 00` and an Apple iBeacon, and CoreBluetooth concatenates them into one blob. `T2T1T0` is one decimal number, `TTTHHH`: `0x03D6E3` = 251619 → 25.1 °C, 61.9 %. History uses the `494e5445-4c4c-495f-524f-434b535f…` ("INTELLI_ROCKS") service: write `33 01 <minutes-back> 00 01 … xor` to `…2012`, and records stream back on `…2013` six per packet. Based on [GoveeBTTempLogger](https://github.com/wcbonner/GoveeBTTempLogger).
 - **ThermoPro** puts the reading straight into the manufacturer data (the "company id" bytes included): `Int16LE temp/10`, humidity, battery level. The TP357 history opcodes are `a7`/`a6`; the TP357S needs an `a5` time-sync handshake followed by `cccc…6666`-framed requests. Based on [thermopro-ble](https://github.com/Bluetooth-Devices/thermopro-ble), [tpy357](https://github.com/alexpacini/tpy357) and [pasky/tp357](https://github.com/pasky/tp357).
+- **Philips Air+ purifiers** speak encrypted CoAP on UDP 5683.
+  - Discovery is a plaintext `GET /sys/dev/info` sent to multicast 224.0.1.187 and the subnet broadcast. macOS 27 hides the ARP table, so a MAC address can't be used to find the device.
+  - The session is `POST /sys/dev/sync`, then `GET /sys/dev/status` with Observe=0.
+  - Each notification is `KEY + AES-128-CBC ciphertext + SHA-256`, with the key and IV taken from `MD5("JiangPan" + KEY)`.
+  - The purifier only reports **changes**, so the app keeps the last report and records it every minute while empty-CON pings show the device is reachable.
+  - Based on [aioairctrl](https://github.com/kongo09/aioairctrl) and [philips-airpurifier-coap](https://github.com/kongo09/philips-airpurifier-coap).
+  - Only one app per Mac receives a purifier's updates (the newest subscription wins).
 - Background (menu bar) apps on macOS scan passively, so a sensor's name, which arrives in its scan response, is often missing. Govee units are recognised by their manufacturer data, and configured sensors by their stored Bluetooth identifier.

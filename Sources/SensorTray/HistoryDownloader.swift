@@ -84,6 +84,7 @@ final class HistoryDownloader: NSObject, CBPeripheralDelegate {
         case .h5075: return try await downloadGovee(p, minutes: minutes, log: log)
         case .tp357: return try await downloadTP357(p, minutes: minutes, log: log)
         case .tp357s: return try await downloadTP357S(p, minutes: minutes, log: log)
+        case .philipsAir: throw DownloadError.noData   // Wi-Fi device; nothing to download
         }
     }
 
