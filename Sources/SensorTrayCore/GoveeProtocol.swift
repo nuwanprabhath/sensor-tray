@@ -17,12 +17,26 @@ public enum GoveeProtocol {
         return nil
     }
 
-    /// CoreBluetooth hands manufacturer data as company id (LE) + payload:
-    /// `88 EC 00 T2 T1 T0 BB 00`.
+    /// Recognises an H5075 by its manufacturer data alone. Needed because the
+    /// name lives in the scan response, which background (passive) scans
+    /// on macOS often don't receive.
+    public static func model(forManufacturerData d: [UInt8]) -> SensorModel? {
+        record(in: d) == nil ? nil : .h5075
+    }
+
+    /// The H5075 advertises two manufacturer records, Govee's
+    /// `88 EC 00 T2 T1 T0 BB 00` and an Apple iBeacon (`4C 00 02 15 …`), and
+    /// CoreBluetooth concatenates them into one blob. Finds Govee's 8 bytes.
+    static func record(in d: [UInt8]) -> ArraySlice<UInt8>? {
+        if d.count >= 8, d[0] == 0x88, d[1] == 0xEC { return d[0..<8] }
+        // Tolerate the opposite order: iBeacon record (25 bytes) first.
+        if d.count >= 33, d[0] == 0x4C, d[1] == 0x00, d[25] == 0x88, d[26] == 0xEC { return d[25..<33] }
+        return nil
+    }
+
     public static func parseAdvert(manufacturerData d: [UInt8]) -> Reading? {
-        guard d.count == 8, d[0] == 0x88, d[1] == 0xEC else { return nil }
-        guard let (temp, humidity) = decodePacked(d[3], d[4], d[5]) else { return nil }
-        return Reading(tempC: temp, humidity: humidity, battery: Int(min(d[6], 100)))
+        guard let r = record(in: d), let (temp, humidity) = decodePacked(r[r.startIndex + 3], r[r.startIndex + 4], r[r.startIndex + 5]) else { return nil }
+        return Reading(tempC: temp, humidity: humidity, battery: Int(min(r[r.startIndex + 6], 100)))
     }
 
     /// Three big-endian bytes packing temperature and humidity as one decimal

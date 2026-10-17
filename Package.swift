@@ -16,7 +16,11 @@ let package = Package(
             name: "SensorTray",
             dependencies: ["SensorTrayCore"],
             path: "Sources/SensorTray",
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v5)],
+            // Embeds the Bluetooth usage string so the bare CLI binary (not
+            // just the .app bundle) is allowed to use CoreBluetooth.
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT",
+                                           "-Xlinker", "__info_plist", "-Xlinker", "Support/Info.plist"])]
         ),
         // Assertion runner standing in for XCTest, which needs a full Xcode
         // install. Run with `swift run SensorTrayChecks`.

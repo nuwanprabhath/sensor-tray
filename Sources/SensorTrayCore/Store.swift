@@ -20,6 +20,8 @@ public final class Store {
         guard sqlite3_open(path, &db) == SQLITE_OK else {
             throw StoreError.open(String(cString: sqlite3_errmsg(db)))
         }
+        // The CLI tools may write while the app is running.
+        sqlite3_busy_timeout(db, 3000)
         try exec("""
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS sensors(

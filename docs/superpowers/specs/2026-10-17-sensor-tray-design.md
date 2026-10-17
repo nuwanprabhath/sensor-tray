@@ -25,7 +25,9 @@ Non-goals: alerts, °F, iOS, cloud sync, any model other than the families below
 
 ### Govee H5075 advertisement
 
-CoreBluetooth `manufacturerData` = `88 EC` + `00 T2 T1 T0 BB 00`.
+CoreBluetooth `manufacturerData` = `88 EC` + `00 T2 T1 T0 BB 00`, usually followed by a second
+(iBeacon, `4C 00 02 15 …`) record that CoreBluetooth concatenates into the same blob. Background
+scans often lack the name (it's in the scan response), so the `88 EC` record also identifies the model.
 `v = T2<<16 | T1<<8 | T0`; negative if `v & 0x800000`; `v &= 0x7FFFFF`;
 temp = `(v / 1000) / 10` °C (sign applied), humidity = `(v % 1000) / 10` %, battery = `BB` %.
 Sample: `88 EC 00 04 18 87 61 00` → 26.8 °C, 42.3 %, 97 %.
@@ -134,7 +136,7 @@ Tests/SensorTrayTests/      protocol decoding, store, gaps, CSV
 
 ### Testing
 
-- Unit tests (XCTest via `swift test`) on byte vectors from the reference projects and
+- Checks in the `SensorTrayChecks` executable (`swift run SensorTrayChecks`; XCTest needs full Xcode) on byte vectors from the reference projects and
   synthesized packets: advert decode, history packet decode/timestamping, request
   encoding and checksums, Store upsert/gap queries, CSV.
 - Manual: `--scan` lists both real sensors with readings; `--history <id>` prints the

@@ -22,6 +22,17 @@ func near(_ a: Double?, _ b: Double, _ tolerance: Double = 0.001) -> Bool {
 
 func xor(_ bytes: ArraySlice<UInt8>) -> UInt8 { bytes.reduce(0, ^) }
 
+func hex(_ string: String) -> [UInt8] {
+    var bytes: [UInt8] = []
+    var index = string.startIndex
+    while index < string.endIndex {
+        let next = string.index(index, offsetBy: 2)
+        bytes.append(UInt8(string[index..<next], radix: 16)!)
+        index = next
+    }
+    return bytes
+}
+
 // MARK: - Govee
 
 do {
@@ -36,6 +47,14 @@ do {
 
     check(GoveeProtocol.parseAdvert(manufacturerData: [0x4C, 0x00, 0x00, 0x04, 0x18, 0x87, 0x61, 0x00]) == nil, "govee wrong company")
     check(GoveeProtocol.parseAdvert(manufacturerData: [0x88, 0xEC, 0x00, 0x04, 0x18]) == nil, "govee short payload")
+
+    // Real capture: Govee record + iBeacon record, concatenated by CoreBluetooth.
+    let combined = hex("88ec0003d6e33e004c000215494e54454c4c495f524f434b535f48575075f2ffc2")
+    let c = GoveeProtocol.parseAdvert(manufacturerData: combined)
+    check(near(c?.tempC, 25.1) && near(c?.humidity, 61.9) && c?.battery == 62, "govee combined records \(String(describing: c))")
+    let reversed = hex("4c000215494e54454c4c495f524f434b535f48575075f2ffc2") + hex("88ec0003d6e33e00")
+    check(near(GoveeProtocol.parseAdvert(manufacturerData: reversed)?.tempC, 25.1), "govee combined records, iBeacon first")
+    check(GoveeProtocol.parseAdvert(manufacturerData: hex("4c000215494e54454c4c495f524f434b535f48575075f2ffc2")) == nil, "govee iBeacon only")
 
     let req = GoveeProtocol.historyRequest(minutesBack: 0x0123)
     check(req.count == 20, "govee request length")
@@ -59,6 +78,8 @@ do {
     check(GoveeProtocol.model(forName: "GVH5075_BCAE") == .h5075, "govee name H5075")
     check(GoveeProtocol.model(forName: "GVH5072_1234") == .h5075, "govee name H5072")
     check(GoveeProtocol.model(forName: "Foo") == nil, "govee name unknown")
+    check(GoveeProtocol.model(forManufacturerData: [0x88, 0xEC, 0x00, 0x04, 0x18, 0x87, 0x61, 0x00]) == .h5075, "govee model from mfg data")
+    check(GoveeProtocol.model(forManufacturerData: [0xC2, 0xE1, 0x00, 0x2D, 0x02, 0x00]) == nil, "govee model rejects thermopro")
 }
 
 // MARK: - ThermoPro
@@ -71,6 +92,8 @@ do {
     check(ThermoProProtocol.parseAdvert(manufacturerData: [0xC2, 0xE1, 0x00, 0x2D, 0x01, 0x00])?.battery == 50, "tp battery mid")
     check(ThermoProProtocol.parseAdvert(manufacturerData: [0xC2, 0xE1, 0x00, 0x2D, 0x00, 0x00])?.battery == 10, "tp battery low")
     check(ThermoProProtocol.parseAdvert(manufacturerData: [0xC2, 0xFF, 0xFF, 0xFF, 0x02, 0x00]) == nil, "tp all-FF")
+    let tpCapture = ThermoProProtocol.parseAdvert(manufacturerData: hex("c206012c220b01"))  // real TP357S capture
+    check(near(tpCapture?.tempC, 26.2) && near(tpCapture?.humidity, 44) && tpCapture?.battery == 100, "tp real capture \(String(describing: tpCapture))")
     check(near(ThermoProProtocol.parseAdvert(manufacturerData: [0xC2, 0x9C, 0xFF, 0x2D, 0x02, 0x00])?.tempC, -10.0), "tp negative")
 
     check(ThermoProProtocol.model(forName: "TP357 (7216)") == .tp357, "tp name TP357")
