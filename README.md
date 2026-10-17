@@ -3,8 +3,7 @@
 A native macOS menu bar app for Bluetooth thermo-hygrometers. It shows the temperature and humidity of your main sensor in the menu bar, and a click opens every sensor with a chart of its history. It replaces juggling the Govee and ThermoPro phone apps.
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="Sensor Tray popover showing two sensor cards with live temperature, humidity and 24-hour sparklines, above a combined temperature chart" width="360">
-  <img src="docs/screenshot-dark.png" alt="The same popover in dark mode" width="360">
+  <img src="docs/screenshot-dark.png" alt="Sensor Tray popover showing two sensor cards with live temperature, humidity and 24-hour sparklines, above a combined temperature chart" width="360">
 </p>
 
 ## Supported sensors
@@ -22,7 +21,7 @@ You can add as many sensors of these models as you like and name them.
 - **Menu bar**: the main (★) sensor's `25.1°  62%`, dimmed when the reading is more than 10 minutes old.
 - **Popover**: a card per sensor (temperature, humidity, battery, 24 h min–max and a sparkline) and a combined chart with 6H / 24H / 7D / 30D ranges, a temperature/humidity toggle and a hover read-out. Gaps (Mac asleep, sensor out of range) show as breaks in the line, not misleading straight bridges.
 - **History backfill**: on launch, on wake, every 6 hours and on demand, the app connects briefly to each sensor and downloads only the stretch of its onboard memory that's missing locally, then disconnects so the phone apps keep working. If a sensor doesn't connect (weak signal), it retries 10 minutes later.
-- **Sensors window**: add nearby sensors (with signal bars, so you can tell which is which), rename, reorder, choose the menu bar sensor, export history as CSV, and remove. It also has a launch-at-login toggle.
+- **Sensors window**: add nearby sensors (with signal bars, so you can tell which is which), rename, pick each sensor's color (click its dot), reorder, choose the menu bar sensor, export history as CSV, and remove. It also has a launch-at-login toggle.
 - Live data is read passively from Bluetooth advertisements, so no pairing is needed. Everything stays on this Mac in `~/Library/Application Support/SensorTray/sensortray.sqlite`.
 
 <p align="center">
@@ -53,7 +52,7 @@ The same binary doubles as a test tool:
 .build/release/SensorTray --scan [seconds]            # list nearby sensors with live readings + advert counts
 .build/release/SensorTray --history <uuid> [minutes]  # download a sensor's onboard history
 .build/release/SensorTray --dump                      # configured sensors and stored data
-.build/release/SensorTray --snapshot docs/screenshot.png [light|dark] [sensors]   # render the UI to PNG
+.build/release/SensorTray --snapshot docs/screenshot-dark.png dark [sensors]   # render the UI to PNG
 SENSORTRAY_DEBUG=1 .build/release/SensorTray --scan   # print raw advertisement bytes
 swift run SensorTrayChecks                            # protocol / storage checks
 ```

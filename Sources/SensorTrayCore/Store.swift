@@ -31,6 +31,7 @@ public final class Store {
                 is_main INTEGER NOT NULL DEFAULT 0,
                 sort INTEGER NOT NULL DEFAULT 0,
                 synced_through INTEGER,
+                color TEXT,
                 added_at INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS readings(
@@ -42,6 +43,8 @@ public final class Store {
                 PRIMARY KEY(sensor_id, minute)
             ) WITHOUT ROWID;
             """)
+        // 0.1.0 databases predate the color column; ignore "duplicate column".
+        try? exec("ALTER TABLE sensors ADD COLUMN color TEXT")
     }
 
     /// `~/Library/Application Support/SensorTray/sensortray.sqlite`
@@ -55,11 +58,12 @@ public final class Store {
     // MARK: Sensors
 
     public func sensors() -> [SensorConfig] {
-        query("SELECT id, name, model, is_main, sort FROM sensors ORDER BY sort, added_at") { s in
+        query("SELECT id, name, model, is_main, sort, color FROM sensors ORDER BY sort, added_at") { s in
             guard let id = UUID(uuidString: text(s, 0)),
                   let model = SensorModel(rawValue: text(s, 2)) else { return nil }
             return SensorConfig(id: id, name: text(s, 1), model: model,
-                                isMain: sqlite3_column_int(s, 3) != 0, sort: Int(sqlite3_column_int(s, 4)))
+                                isMain: sqlite3_column_int(s, 3) != 0, sort: Int(sqlite3_column_int(s, 4)),
+                                colorHex: sqlite3_column_type(s, 5) == SQLITE_NULL ? nil : text(s, 5))
         }
     }
 
@@ -70,6 +74,10 @@ public final class Store {
             ON CONFLICT(id) DO UPDATE SET name=excluded.name, model=excluded.model,
                 is_main=excluded.is_main, sort=excluded.sort
             """, [sensor.id.uuidString, sensor.name, sensor.model.rawValue, sensor.isMain ? 1 : 0, sensor.sort, Int(Date().timeIntervalSince1970)])
+    }
+
+    public func setColor(id: UUID, hex: String?) {
+        run("UPDATE sensors SET color = ? WHERE id = ?", [hex as Any, id.uuidString])
     }
 
     public func setMain(id: UUID) {

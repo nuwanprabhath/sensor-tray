@@ -107,6 +107,7 @@ final class AppModel: ObservableObject {
     var mainSensor: SensorConfig? { sensors.first(where: \.isMain) ?? sensors.first }
 
     func color(for sensor: SensorConfig) -> Color {
+        if let hex = sensor.colorHex, let picked = Color(hex: hex) { return picked }
         let index = sensors.firstIndex(where: { $0.id == sensor.id }) ?? 0
         return Self.palette[index % Self.palette.count]
     }
@@ -170,6 +171,12 @@ final class AppModel: ObservableObject {
         guard var sensor = sensors.first(where: { $0.id == id }), !trimmed.isEmpty, trimmed != sensor.name else { return }
         sensor.name = trimmed
         store.save(sensor)
+        reloadSensors()
+    }
+
+    /// nil goes back to the default palette color.
+    func setColor(_ id: UUID, to color: Color?) {
+        store.setColor(id: id, hex: color?.hexString)
         reloadSensors()
     }
 

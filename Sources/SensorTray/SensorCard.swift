@@ -29,7 +29,7 @@ struct SensorCard: View {
                 HStack(spacing: 6) {
                     status(live)
                     if let low = points.map(\.tempC).min(), let high = points.map(\.tempC).max() {
-                        Text(String(format: "24h %.1f–%.1f°", low, high))
+                        Text(String(format: "24h %.1f–%.1f°C", low, high))
                             .help("Lowest and highest temperature in the last 24 hours")
                     }
                     if let battery = live?.reading.battery {
@@ -47,8 +47,13 @@ struct SensorCard: View {
             Spacer(minLength: 0)
 
             VStack(alignment: .trailing, spacing: 0) {
-                Text(live.map { String(format: "%.1f°", $0.reading.tempC) } ?? "--")
-                    .font(.system(size: 30, weight: .medium, design: .rounded).monospacedDigit())
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text(live.map { String(format: "%.1f", $0.reading.tempC) } ?? "--")
+                        .font(.system(size: 30, weight: .medium, design: .rounded).monospacedDigit())
+                    Text("°C")
+                        .font(.system(size: 15, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
                 HStack(spacing: 3) {
                     Image(systemName: "drop.fill")
                         .font(.system(size: 10))

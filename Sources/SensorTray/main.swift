@@ -121,9 +121,18 @@ enum CLI {
         // Let a few advertisements arrive so the cards show live values.
         RunLoop.main.run(until: Date().addingTimeInterval(12))
 
+        // Fixed chart settings in a throwaway defaults suite, so the image is
+        // reproducible and the app's own preferences aren't touched.
+        let suite = "com.nuwan.sensor-tray.snapshot"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(ChartRange.day.rawValue, forKey: "chartRange")
+        defaults.set(ChartMetric.temperature.rawValue, forKey: "chartMetric")
+        defer { defaults.removePersistentDomain(forName: suite) }
+
         let root = Group {
             if arguments.contains("sensors") { SensorsView() } else { PopoverView() }
         }
+            .defaultAppStorage(defaults)
             .environmentObject(model)
             .background(Color(nsColor: .windowBackgroundColor))
             .environment(\.colorScheme, dark ? .dark : .light)

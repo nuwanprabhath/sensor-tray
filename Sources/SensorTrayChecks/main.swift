@@ -161,6 +161,15 @@ do {
     renamed.name = "Lounge"
     store.save(renamed)
     check(store.sensors()[0].name == "Lounge", "store rename")
+    check(store.sensors()[0].colorHex == nil, "store default color")
+    store.setColor(id: a, hex: "#FF8800")
+    check(store.sensors()[0].colorHex == "#FF8800", "store color set")
+    var recolored = store.sensors()[0]
+    recolored.name = "Lounge 2"
+    store.save(recolored)
+    check(store.sensors()[0].colorHex == "#FF8800", "store save keeps color")
+    store.setColor(id: a, hex: nil)
+    check(store.sensors()[0].colorHex == nil, "store color reset")
 
     store.insertBackfill(a, points: [HistoryPoint(minute: 100, tempC: 20, humidity: 40)])
     store.insertLive(a, minute: 100, reading: Reading(tempC: 21, humidity: 41, battery: nil))

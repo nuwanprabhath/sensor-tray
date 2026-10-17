@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1 — 2026-10-17
+
+- Pick a color per sensor: click its dot in the Sensors window for palette swatches, a custom color, or Reset. The color is used for the card, sparkline and chart line.
+- Temperatures show their unit everywhere in the popover: `25.0°C` on the cards, `24h 21.1–25.7°C`, the chart's axis (`24°C`) and its hover read-out.
+- Chart grid lines are more visible.
+- The last time label on the chart's x axis is no longer clipped. The axis now always spans the whole selected range.
+- README shows the dark-mode screenshot only.
+
 ## 0.1.0 — 2026-10-17
 
 - First release: menu bar thermo-hygrometer for Govee H5075/H5072 and ThermoPro TP357/TP357S.

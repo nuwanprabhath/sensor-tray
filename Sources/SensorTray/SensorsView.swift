@@ -91,7 +91,7 @@ private struct ConfiguredRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Circle().fill(model.color(for: sensor)).frame(width: 10, height: 10)
+            ColorDot(sensor: sensor)
 
             VStack(alignment: .leading, spacing: 2) {
                 TextField("Name", text: $name.value)
@@ -176,6 +176,72 @@ private struct NearbyRow: View {
         }
         return parts.joined(separator: " · ")
     }
+}
+
+/// The sensor's color; click to pick another (palette swatches or any
+/// color via the system picker). Used for its card, sparkline and chart line.
+private struct ColorDot: View {
+    @EnvironmentObject private var model: AppModel
+    let sensor: SensorConfig
+    @StateObject private var showPicker = ViewState(false)
+
+    var body: some View {
+        let current = model.color(for: sensor)
+        Button {
+            showPicker.value = true
+        } label: {
+            Circle()
+                .fill(current)
+                .frame(width: 14, height: 14)
+                .overlay(Circle().strokeBorder(.primary.opacity(0.2)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Change color")
+        .popover(isPresented: $showPicker.value, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Color").font(.headline)
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(22), spacing: 8), count: 6), spacing: 8) {
+                    ForEach(Array(ColorDot.swatches.enumerated()), id: \.offset) { _, swatch in
+                        Button {
+                            model.setColor(sensor.id, to: swatch)
+                            showPicker.value = false
+                        } label: {
+                            Circle()
+                                .fill(swatch)
+                                .frame(width: 22, height: 22)
+                                .overlay {
+                                    if swatch.hexString == current.hexString {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                Divider()
+                HStack {
+                    ColorPicker("Custom…", selection: Binding(
+                        get: { current },
+                        set: { model.setColor(sensor.id, to: $0) }
+                    ), supportsOpacity: false)
+                    Spacer()
+                    Button("Reset") {
+                        model.setColor(sensor.id, to: nil)
+                        showPicker.value = false
+                    }
+                    .disabled(sensor.colorHex == nil)
+                }
+                .font(.callout)
+            }
+            .padding(14)
+            .frame(width: 220)
+        }
+    }
+
+    static let swatches: [Color] = AppModel.palette + [.red, .blue, .brown, .cyan]
 }
 
 /// Four bars from RSSI so you can tell which sensor is the one next to you.

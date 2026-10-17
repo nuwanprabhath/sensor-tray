@@ -99,13 +99,16 @@ public struct SensorConfig: Identifiable, Equatable, Sendable {
     public var model: SensorModel
     public var isMain: Bool
     public var sort: Int
+    /// User-picked color as `#RRGGBB`; nil uses the default palette.
+    public var colorHex: String?
 
-    public init(id: UUID, name: String, model: SensorModel, isMain: Bool, sort: Int) {
+    public init(id: UUID, name: String, model: SensorModel, isMain: Bool, sort: Int, colorHex: String? = nil) {
         self.id = id
         self.name = name
         self.model = model
         self.isMain = isMain
         self.sort = sort
+        self.colorHex = colorHex
     }
 }
 

@@ -5,8 +5,8 @@ cd "$(dirname "$0")"
 
 APP_NAME="Sensor Tray"
 BUNDLE_ID="com.nuwan.sensor-tray"
-VERSION="0.1.0"
-BUILD_NUMBER="1"
+VERSION="0.1.1"
+BUILD_NUMBER="2"
 DIST="dist/$APP_NAME.app"
 
 swift build -c release --product SensorTray

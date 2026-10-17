@@ -9,7 +9,15 @@ enum ChartMetric: String, CaseIterable, Identifiable {
     var symbol: String { self == .temperature ? "thermometer.medium" : "humidity" }
     var title: String { self == .temperature ? "Temperature" : "Humidity" }
     func value(_ p: HistoryPoint) -> Double { self == .temperature ? p.tempC : p.humidity }
-    func format(_ v: Double) -> String { self == .temperature ? String(format: "%.1f°", v) : String(format: "%.0f%%", v) }
+    func format(_ v: Double) -> String { self == .temperature ? String(format: "%.1f°C", v) : String(format: "%.0f%%", v) }
+    /// Axis ticks: drop the decimal when the tick is whole (24°C, not 24.0°C).
+    func axisFormat(_ v: Double) -> String {
+        let whole = v.rounded() == v
+        switch self {
+        case .temperature: return String(format: whole ? "%.0f°C" : "%.1f°C", v)
+        case .humidity: return String(format: whole ? "%.0f%%" : "%.1f%%", v)
+        }
+    }
 }
 
 /// All sensors on one chart for the chosen metric and range, with a hover
@@ -68,18 +76,25 @@ struct HistoryChart: View {
             .chartYScale(domain: .automatic(includesZero: false))
             .chartYAxis {
                 AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
-                    AxisGridLine().foregroundStyle(.quaternary)
+                    AxisGridLine(stroke: Self.gridStroke).foregroundStyle(Self.gridColor)
                     AxisValueLabel {
-                        if let v = value.as(Double.self) { Text(metric.format(v)).font(.system(size: 9)) }
+                        if let v = value.as(Double.self) { Text(metric.axisFormat(v)).font(.system(size: 9)) }
                     }
                 }
             }
             .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                    AxisGridLine().foregroundStyle(.quaternary)
-                    AxisValueLabel(format: xFormat).font(.system(size: 9))
+                AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                    AxisGridLine(stroke: Self.gridStroke).foregroundStyle(Self.gridColor)
+                    // A label centered on a tick near the right edge gets
+                    // clipped; hang those to the left of their tick instead.
+                    if let date = value.as(Date.self), domain.upperBound.timeIntervalSince(date) < Double(range.minutes) * 60 * 0.08 {
+                        AxisValueLabel(format: xFormat, anchor: .topTrailing).font(.system(size: 9))
+                    } else {
+                        AxisValueLabel(format: xFormat).font(.system(size: 9))
+                    }
                 }
             }
+            .chartXScale(domain: domain)
             .chartOverlay { proxy in
                 GeometryReader { geo in
                     Rectangle().fill(.clear).contentShape(Rectangle())
@@ -97,6 +112,15 @@ struct HistoryChart: View {
             }
         }
     }
+
+    /// The whole selected range, so the axis doesn't shrink to the data.
+    private var domain: ClosedRange<Date> {
+        let now = Date()
+        return now.addingTimeInterval(-Double(range.minutes) * 60)...now
+    }
+
+    private static let gridStroke = StrokeStyle(lineWidth: 0.7)
+    private static let gridColor = Color.primary.opacity(0.22)
 
     private var xFormat: Date.FormatStyle {
         switch range {
