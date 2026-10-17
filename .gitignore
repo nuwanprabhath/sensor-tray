@@ -1,0 +1,18 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+
+# Build output
+dist/
+
+# Icon generation scratch
+AppIcon.iconset/
+
+# macOS
+.DS_Store
