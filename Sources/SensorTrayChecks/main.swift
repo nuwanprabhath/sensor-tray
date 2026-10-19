@@ -517,7 +517,28 @@ do {
     check(store.aggregateAir(p, from: base, to: base + 119, bucketMinutes: 1).isEmpty && store.earliestMinute() == nil, "air deleted with sensor")
 }
 
-// MARK: - Schema v2 → v4
+// MARK: - Event markers
+
+do {
+    let path = NSTemporaryDirectory() + "sensortray-events-\(UUID().uuidString).sqlite"
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try Store(path: path)
+    check(store.latestEvent() == nil && store.events(from: 0, to: .max).isEmpty, "events start empty")
+    let first = store.addEvent(minute: 1_000, label: "Heating off")
+    let second = store.addEvent(minute: 2_000)
+    check(first != second, "event ids are unique")
+    check(store.events(from: 0, to: 5_000).map(\.minute) == [1_000, 2_000], "events in range, oldest first")
+    check(store.events(from: 1_500, to: 5_000).map(\.id) == [second], "events filtered by range")
+    check(store.latestEvent()?.id == second, "latest event")
+    store.renameEvent(id: second, label: "Windows opened")
+    check(store.event(id: second)?.label == "Windows opened", "event rename")
+    store.deleteEvent(id: second)
+    check(store.event(id: second) == nil && store.latestEvent()?.id == first, "event delete")
+    let reader = try Store(path: path, readOnly: true)
+    check(reader.events(from: 0, to: 5_000).map(\.label) == ["Heating off"], "events readable read-only")
+}
+
+// MARK: - Schema v2 → v5
 
 do {
     let path = NSTemporaryDirectory() + "sensortray-v2-\(UUID().uuidString).sqlite"
@@ -538,12 +559,14 @@ do {
         """, nil, nil, nil)
     sqlite3_close(db)
     let store = try Store(path: path)
-    check(store.userVersion == Store.schemaVersion && store.sensors().first?.name == "Kept" && store.sensors().first?.isOutdoor == false, "v2 → v4 keeps data, outdoor off")
+    check(store.userVersion == Store.schemaVersion && store.sensors().first?.name == "Kept" && store.sensors().first?.isOutdoor == false, "v2 → v5 keeps data, outdoor off")
     if let kept = store.sensors().first {
         check(near(store.series(kept.id, from: 0, to: 1000, bucketMinutes: 1).first?.tempC, 21.5), "v2 → v3 keeps samples")
         store.insertAir(kept.id, minute: 601, pm25: 3, allergenIndex: 1)
         check(store.lastAir(kept.id)?.pm25 == 3, "v3 air tables usable")
     }
+    store.addEvent(minute: 700, label: "Migrated")
+    check(store.latestEvent()?.label == "Migrated", "v5 events table usable after migration")
 }
 
 // MARK: - CSV

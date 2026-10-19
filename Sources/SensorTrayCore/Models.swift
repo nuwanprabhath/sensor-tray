@@ -127,6 +127,22 @@ public struct SensorConfig: Identifiable, Equatable, Sendable {
     }
 }
 
+/// A user-placed marker on the timeline ("Windows opened"), drawn on every
+/// chart so what happened afterwards is easy to see.
+public struct ChartEvent: Identifiable, Equatable, Sendable {
+    public let id: Int
+    public let minute: Int
+    public var label: String
+
+    public init(id: Int, minute: Int, label: String) {
+        self.id = id
+        self.minute = minute
+        self.label = label
+    }
+
+    public var date: Date { Date(timeIntervalSince1970: TimeInterval(minute * 60)) }
+}
+
 public extension Int {
     /// Current unix time in whole minutes.
     static func nowMinute(_ date: Date = Date()) -> Int { Int(date.timeIntervalSince1970) / 60 }

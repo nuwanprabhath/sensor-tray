@@ -20,6 +20,55 @@ struct ChartSeries: Equatable {
     let segments: [Int]
 }
 
+/// How much recent history the card sparklines show.
+enum SparkWindow: Int, CaseIterable, Identifiable, Sendable {
+    case quarterHour = 15, hour = 60, threeHours = 180, sixHours = 360, twelveHours = 720, day = 1440
+
+    var id: Int { rawValue }
+    var minutes: Int { rawValue }
+    static let key = "sparklineMinutes"
+
+    /// "15m", "1h", "24h"
+    var title: String { minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h" }
+
+    /// Axis labels under the sparkline: start, middle, end.
+    var axisLabels: (String, String, String) {
+        let half = minutes / 2
+        let middle = minutes == 15 ? "" : (half < 60 || half % 60 != 0 ? "−\(half)m" : "−\(half / 60)h")
+        return ("−" + title, middle, "now")
+    }
+
+    /// Point spacing, keeping each sparkline at roughly 150 points or fewer.
+    var bucketMinutes: Int {
+        switch self {
+        case .quarterHour, .hour: return 1
+        case .threeHours: return 2
+        case .sixHours, .twelveHours: return 5
+        case .day: return 10
+        }
+    }
+
+    var spoken: String {
+        switch self {
+        case .quarterHour: return "15 minutes"
+        case .hour: return "hour"
+        default: return "\(minutes / 60) hours"
+        }
+    }
+}
+
+/// The focused marker and how each charted sensor changed since then,
+/// from the reading at the marker to the latest one.
+struct EventFocus: Equatable {
+    struct Change: Equatable {
+        let id: UUID
+        let from: Double
+        let to: Double
+    }
+    let event: ChartEvent
+    let changes: [Change]
+}
+
 /// Everything the chart needs for one window, computed off the main thread.
 struct ChartSnapshot: Equatable {
     let window: ChartWindow
@@ -31,6 +80,10 @@ struct ChartSnapshot: Equatable {
     let series: [ChartSeries]
     /// Oldest stored reading of any sensor; bounds panning.
     let earliest: Int?
+    /// Markers inside `span`.
+    let events: [ChartEvent]
+    /// The marker shown under the chart (picked, or else the newest one).
+    let focus: EventFocus?
 
     var isEmpty: Bool { series.allSatisfy(\.points.isEmpty) }
 }
@@ -51,9 +104,19 @@ final class ChartModel: ObservableObject {
     @Published private(set) var window: ChartWindow
     @Published private(set) var metric: ChartMetric
     @Published private(set) var snapshot: ChartSnapshot?
-    /// Last 24 h per sensor at 10-minute resolution, for the card sparklines
+    /// The last `sparkWindow` per sensor, for the card sparklines
     /// (temperature for thermometers, PM2.5 for purifiers).
     @Published private(set) var sparklines: [UUID: [ChartPoint]] = [:]
+    /// The sparklines' fixed x axis (the last 24 h) and the markers in it.
+    @Published private(set) var sparkContext = SparkContext(window: .day, span: 0...1440, events: [], focusedEvent: nil)
+    @Published private(set) var sparkWindow: SparkWindow
+
+    struct SparkContext: Equatable {
+        let window: SparkWindow
+        let span: ClosedRange<Int>
+        let events: [ChartEvent]
+        let focusedEvent: Int?
+    }
 
     struct SensorRef: Equatable {
         let id: UUID
@@ -64,6 +127,8 @@ final class ChartModel: ObservableObject {
         let window: ChartWindow
         let metric: ChartMetric
         let sensors: [SensorRef]
+        let selectedEvent: Int?
+        let sparkWindow: SparkWindow
     }
 
     private static let rangeKey = "chartRange"
@@ -71,6 +136,8 @@ final class ChartModel: ObservableObject {
     private let reader: Store?
     private let queue = DispatchQueue(label: "com.nuwan.sensor-tray.charts", qos: .userInitiated)
     private var sensors: [SensorRef] = []
+    /// The marker picked by clicking its flag; nil follows the newest one.
+    private var selectedEvent: Int?
     private var inFlight = false
     private var pending: Request?
 
@@ -79,6 +146,14 @@ final class ChartModel: ObservableObject {
         let saved = UserDefaults.standard.string(forKey: Self.rangeKey).flatMap(ChartRange.init(rawValue:))
         window = ChartWindow(range: saved ?? .day)
         metric = UserDefaults.standard.string(forKey: Self.metricKey).flatMap(ChartMetric.init(rawValue:)) ?? .temperature
+        sparkWindow = SparkWindow(rawValue: UserDefaults.standard.integer(forKey: SparkWindow.key)) ?? .day
+    }
+
+    func setSparkWindow(_ newWindow: SparkWindow) {
+        UserDefaults.standard.set(newWindow.rawValue, forKey: SparkWindow.key)
+        guard newWindow != sparkWindow else { return }
+        sparkWindow = newWindow
+        reload()
     }
 
     private var earliest: Int? { snapshot?.earliest }
@@ -118,6 +193,13 @@ final class ChartModel: ObservableObject {
         pan(by: direction * length)
     }
 
+    /// Focuses a marker (nil: the newest).
+    func selectEvent(_ id: Int?) {
+        guard id != selectedEvent else { return }
+        selectedEvent = id
+        reload()
+    }
+
     func goLive() {
         update(ChartWindow(range: window.range))
     }
@@ -135,7 +217,8 @@ final class ChartModel: ObservableObject {
 
     /// Re-queries the current window and the sparklines (e.g. new readings).
     func reload() {
-        pending = Request(window: window, metric: metric, sensors: sensors)
+        pending = Request(window: window, metric: metric, sensors: sensors, selectedEvent: selectedEvent,
+                          sparkWindow: sparkWindow)
         startNext()
     }
 
@@ -144,13 +227,14 @@ final class ChartModel: ObservableObject {
         pending = nil
         inFlight = true
         queue.async { [weak self] in
-            let (snapshot, sparklines) = Self.compute(request, reader: reader)
+            let (snapshot, sparklines, sparkContext) = Self.compute(request, reader: reader)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.inFlight = false
                     if self.snapshot != snapshot { self.snapshot = snapshot }
                     if self.sparklines != sparklines { self.sparklines = sparklines }
+                    if self.sparkContext != sparkContext { self.sparkContext = sparkContext }
                     self.startNext()
                 }
             }
@@ -158,7 +242,7 @@ final class ChartModel: ObservableObject {
     }
 
     /// Runs on the background queue.
-    nonisolated private static func compute(_ request: Request, reader: Store) -> (ChartSnapshot, [UUID: [ChartPoint]]) {
+    nonisolated private static func compute(_ request: Request, reader: Store) -> (ChartSnapshot, [UUID: [ChartPoint]], SparkContext) {
         let now = Int.nowMinute()
         let earliest = reader.earliestMinute()
         let window = request.window
@@ -174,16 +258,27 @@ final class ChartModel: ObservableObject {
                                 from: span.lowerBound, to: span.upperBound, bucket: bucket, offset: offset)
             return ChartSeries(id: sensor.id, points: points, segments: segments(points, bucket: bucket))
         }
+        let focused = request.selectedEvent.flatMap(reader.event(id:)) ?? reader.latestEvent()
+        let focus = focused.map { event in
+            EventFocus(event: event, changes: charted.compactMap { sensor in
+                change(for: sensor, metric: request.metric, since: event.minute, now: now, reader: reader)
+            })
+        }
         let snapshot = ChartSnapshot(window: window, metric: request.metric, span: span, bucketMinutes: bucket,
                                      showsBand: window.showsBand(now: now, earliest: earliest),
-                                     series: series, earliest: earliest)
+                                     series: series, earliest: earliest,
+                                     events: reader.events(from: span.lowerBound, to: span.upperBound), focus: focus)
 
         var sparklines: [UUID: [ChartPoint]] = [:]
         for sensor in request.sensors {
             sparklines[sensor.id] = points(for: sensor, metric: sensor.isAirPurifier ? .pm25 : .temperature, reader: reader,
-                                           from: now - 1440, to: now, bucket: 10, offset: 0)
+                                           from: now - request.sparkWindow.minutes, to: now,
+                                           bucket: request.sparkWindow.bucketMinutes, offset: 0)
         }
-        return (snapshot, sparklines)
+        let sparkSpan = (now - request.sparkWindow.minutes)...now
+        let sparkContext = SparkContext(window: request.sparkWindow, span: sparkSpan, events: reader.events(from: sparkSpan.lowerBound, to: now),
+                                        focusedEvent: focus?.event.id)
+        return (snapshot, sparklines, sparkContext)
     }
 
     nonisolated private static func points(for sensor: SensorRef, metric: ChartMetric, reader: Store,
@@ -197,6 +292,17 @@ final class ChartModel: ObservableObject {
         case .humidity: return climate.map { ChartPoint(minute: $0.minute, avg: $0.humAvg, low: $0.humMin, high: $0.humMax) }
         default: return climate.map { ChartPoint(minute: $0.minute, avg: $0.tempAvg, low: $0.tempMin, high: $0.tempMax) }
         }
+    }
+
+    /// Reading at the marker (nearest minute within 15) and the latest one
+    /// (within the last hour); nil if either is missing.
+    nonisolated private static func change(for sensor: SensorRef, metric: ChartMetric, since minute: Int, now: Int,
+                                           reader: Store) -> EventFocus.Change? {
+        let around = points(for: sensor, metric: metric, reader: reader, from: minute - 15, to: minute + 15, bucket: 1, offset: 0)
+        let recent = points(for: sensor, metric: metric, reader: reader, from: now - 60, to: now, bucket: 1, offset: 0)
+        guard let at = around.min(by: { abs($0.minute - minute) < abs($1.minute - minute) }),
+              let latest = recent.last, latest.minute >= at.minute else { return nil }
+        return EventFocus.Change(id: sensor.id, from: at.avg, to: latest.avg)
     }
 
     nonisolated private static func segments(_ points: [ChartPoint], bucket: Int) -> [Int] {

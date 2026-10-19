@@ -247,6 +247,27 @@ final class AppModel: ObservableObject {
         ble.knownModels = Dictionary(uniqueKeysWithValues: sensors.map { ($0.id, $0.model) })
     }
 
+    // MARK: Event markers
+
+    /// Drops a marker at the current minute and focuses it on the chart.
+    func addEvent(label: String = "") {
+        let id = store.addEvent(minute: Int.nowMinute(), label: label)
+        charts.goLive()
+        charts.selectEvent(id)
+        charts.reload()
+    }
+
+    func renameEvent(_ id: Int, to label: String) {
+        store.renameEvent(id: id, label: label.trimmingCharacters(in: .whitespaces))
+        charts.reload()
+    }
+
+    func deleteEvent(_ id: Int) {
+        store.deleteEvent(id: id)
+        charts.selectEvent(nil)
+        charts.reload()
+    }
+
     // MARK: Export
 
     func exportCSV(_ id: UUID) {

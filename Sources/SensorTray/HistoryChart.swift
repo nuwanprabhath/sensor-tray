@@ -103,7 +103,14 @@ struct HistoryChart: View, Equatable {
         let domain = Self.date(snapshot.span.lowerBound)...Self.date(snapshot.span.upperBound)
         let visible = styles.filter { style in snapshot.series.contains { $0.id == style.id } }
 
+        let focusID = snapshot.focus?.event.id
+
         return Chart {
+            // Shade the time after the focused marker, so the "after" is obvious.
+            if let event = snapshot.focus?.event, snapshot.span.contains(event.minute) {
+                RectangleMark(xStart: .value("Marker", event.date), xEnd: .value("End", domain.upperBound))
+                    .foregroundStyle(Self.markerColor.opacity(0.09))
+            }
             if snapshot.showsBand {
                 ForEach(marks) { m in
                     AreaMark(x: .value("Time", m.date), yStart: .value("Low", m.low), yEnd: .value("High", m.high),
@@ -118,6 +125,19 @@ struct HistoryChart: View, Equatable {
                     .foregroundStyle(by: .value("Sensor", m.sensor))
                     .interpolationMethod(.monotone)
                     .lineStyle(StrokeStyle(lineWidth: snapshot.showsBand ? 1.5 : 1.8, lineCap: .round))
+            }
+            ForEach(snapshot.events) { event in
+                let focused = event.id == focusID
+                RuleMark(x: .value("Marker", event.date))
+                    .foregroundStyle(focused ? Self.markerColor : Color.primary.opacity(0.45))
+                    .lineStyle(StrokeStyle(lineWidth: focused ? 1.2 : 1, dash: [3, 2]))
+                    .annotation(position: .overlay, alignment: .top, spacing: 0,
+                                overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                        Image(systemName: "flag.fill")
+                            .font(.system(size: 8))
+                            .foregroundStyle(focused ? Self.markerColor : Color.primary.opacity(0.6))
+                            .offset(x: 4, y: -1)
+                    }
             }
         }
         .chartForegroundStyleScale(domain: visible.map(\.id.uuidString), range: visible.map(\.color))
@@ -168,6 +188,13 @@ struct HistoryChart: View, Equatable {
 
     static func date(_ minute: Int) -> Date { Date(timeIntervalSince1970: TimeInterval(minute * 60)) }
 
+    /// Yellow on dark backgrounds, a deeper gold on light ones (plain yellow
+    /// washes out there).
+    static let markerColor = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? .systemYellow
+            : NSColor(srgbRed: 0.80, green: 0.58, blue: 0.0, alpha: 1)
+    })
     private static let gridStroke = StrokeStyle(lineWidth: 0.7)
     private static let gridColor = Color.primary.opacity(0.22)
 }
@@ -195,6 +222,11 @@ private struct ChartInteractionLayer: View {
                         }
                     }
                     .gesture(dragToPan)
+                    .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+                        if let proxy, let event = event(nearX: tap.location.x - plot.minX, proxy: proxy) {
+                            charts.selectEvent(event.id)
+                        }
+                    })
 
                 if let proxy, let x = state.hoverX, state.dragApplied == nil,
                    let minute = nearestBucket(atX: x, proxy: proxy),
@@ -235,6 +267,14 @@ private struct ChartInteractionLayer: View {
             .onEnded { _ in state.dragApplied = nil }
     }
 
+    /// The marker drawn within a few points of `x`, if any.
+    private func event(nearX x: CGFloat, proxy: ChartProxy) -> ChartEvent? {
+        snapshot.events
+            .compactMap { e in proxy.position(forX: e.date).map { (e, abs($0 - x)) } }
+            .filter { $0.1 <= 6 }
+            .min { $0.1 < $1.1 }?.0
+    }
+
     /// The bucket under the pointer, snapped to the bucket grid.
     private func nearestBucket(atX x: CGFloat, proxy: ChartProxy) -> Int? {
         guard let date: Date = proxy.value(atX: x) else { return nil }
@@ -268,6 +308,12 @@ private struct ChartInteractionLayer: View {
                                      : .dateTime.weekday(.abbreviated).day().month(.abbreviated).hour().minute())
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
+            ForEach(snapshot.events.filter { abs($0.minute - minute) <= max(snapshot.bucketMinutes, 2) }) { event in
+                Label(event.label.isEmpty ? "Marker" : event.label, systemImage: "flag.fill")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(HistoryChart.markerColor)
+                    .lineLimit(1)
+            }
             ForEach(styles, id: \.id) { style in
                 if let series = snapshot.series.first(where: { $0.id == style.id }),
                    let p = Self.nearest(series.points, to: minute), abs(p.minute - minute) <= snapshot.bucketMinutes {

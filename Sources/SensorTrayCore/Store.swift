@@ -24,7 +24,7 @@ import SQLite3
 public final class Store: @unchecked Sendable {
     public enum StoreError: Error { case open(String), sql(String) }
 
-    public static let schemaVersion: Int32 = 4
+    public static let schemaVersion: Int32 = 5
 
     private var db: OpaquePointer?
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -111,9 +111,18 @@ public final class Store: @unchecked Sendable {
         ) WITHOUT ROWID;
         """
 
+    private static let schemaV5 = """
+        CREATE TABLE IF NOT EXISTS events(
+            id INTEGER PRIMARY KEY,
+            minute INTEGER NOT NULL,
+            label TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS events_minute ON events(minute);
+        """
+
     /// Brings any database up to the current schema, one transaction:
     /// v1 (TEXT sensor ids, REAL values, no rollup) → v2 → v3 (air tables)
-    /// → v4 (outdoor flag).
+    /// → v4 (outdoor flag) → v5 (event markers).
     private func migrate() throws {
         try exec("PRAGMA journal_mode=WAL")
         let version = userVersion
@@ -125,6 +134,7 @@ public final class Store: @unchecked Sendable {
             if version < 2 { try migrateToV2(fromV1: fromV1) }
             try exec(Self.schemaV3)
             if version < 4 { try exec("ALTER TABLE sensors ADD COLUMN is_outdoor INTEGER NOT NULL DEFAULT 0") }
+            try exec(Self.schemaV5)
             try exec("PRAGMA user_version = \(Self.schemaVersion)")
             try exec("COMMIT")
         } catch {
@@ -391,6 +401,42 @@ public final class Store: @unchecked Sendable {
             cursor = max(cursor, m + 1)
         }
         return now - cursor + 1 >= minGap ? cursor : nil
+    }
+
+    // MARK: Events
+
+    /// Adds a marker and returns its id.
+    @discardableResult
+    public func addEvent(minute: Int, label: String = "") -> Int {
+        run("INSERT INTO events(minute, label) VALUES(?, ?)", [minute, label])
+        return Int(sqlite3_last_insert_rowid(db))
+    }
+
+    /// Markers in `from...to`, oldest first.
+    public func events(from: Int, to: Int) -> [ChartEvent] {
+        query("SELECT id, minute, label FROM events WHERE minute BETWEEN ? AND ? ORDER BY minute, id", [from, to]) { s in
+            ChartEvent(id: Int(sqlite3_column_int64(s, 0)), minute: Int(sqlite3_column_int64(s, 1)), label: text(s, 2))
+        }
+    }
+
+    public func event(id: Int) -> ChartEvent? {
+        query("SELECT id, minute, label FROM events WHERE id = ?", [id]) { s in
+            ChartEvent(id: Int(sqlite3_column_int64(s, 0)), minute: Int(sqlite3_column_int64(s, 1)), label: text(s, 2))
+        }.first
+    }
+
+    public func latestEvent() -> ChartEvent? {
+        query("SELECT id, minute, label FROM events ORDER BY minute DESC, id DESC LIMIT 1") { s in
+            ChartEvent(id: Int(sqlite3_column_int64(s, 0)), minute: Int(sqlite3_column_int64(s, 1)), label: text(s, 2))
+        }.first
+    }
+
+    public func renameEvent(id: Int, label: String) {
+        run("UPDATE events SET label = ? WHERE id = ?", [label, id])
+    }
+
+    public func deleteEvent(id: Int) {
+        run("DELETE FROM events WHERE id = ?", [id])
     }
 
     // MARK: SQLite plumbing

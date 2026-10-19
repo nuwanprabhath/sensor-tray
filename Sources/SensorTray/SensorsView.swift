@@ -51,6 +51,8 @@ struct SensorsView: View {
                 }
             }
 
+            SparkWindowPicker(charts: model.charts)
+
             if model.outdoorSensor != nil {
                 HStack(spacing: 8) {
                     Text("Menu bar")
@@ -352,5 +354,23 @@ struct SignalBars: View {
         }
         .frame(width: 20, height: 16, alignment: .bottom)
         .help("Signal \(rssi) dBm")
+    }
+}
+
+/// How much time the popover's per-sensor sparklines cover.
+private struct SparkWindowPicker: View {
+    @ObservedObject var charts: ChartModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Card charts")
+            Picker("Card charts", selection: Binding(get: { charts.sparkWindow }, set: { charts.setSparkWindow($0) })) {
+                ForEach(SparkWindow.allCases) { Text($0.title).tag($0) }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .fixedSize()
+        }
+        .help("How much recent time each sensor's small chart in the popover shows")
     }
 }

@@ -14,6 +14,11 @@ import SensorTrayCore
 //   SENSORTRAY_DB=<db> SensorTray …          use another database (e.g. a demo or a copy of real data)
 let arguments = CommandLine.arguments
 
+// A send on a socket the system considers broken (e.g. the purifier's UDP
+// session right after launch) raises SIGPIPE, which silently kills the app
+// with no crash report. Failed sends are handled where they happen instead.
+signal(SIGPIPE, SIG_IGN)
+
 func argument(after flag: String) -> String? {
     guard let index = arguments.firstIndex(of: flag), arguments.count > index + 1 else { return nil }
     return arguments[index + 1]

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 — 2026-10-19
+
+- **Event markers**: a **Mark** button above the chart drops a marker at the current minute, so you can see what happens afterwards (open the windows and watch the rooms cool). Markers appear on every chart and range as dashed lines with a flag, move with time like the readings, and are kept with the history.
+- A strip under the chart shows the focused marker (the newest, or one you click). It has an editable label with presets (Windows opened/closed, Heating on/off, Air con on/off, Purifier on, Cooking, Shower), when it was ("8:29 pm · 40 min ago"), and each sensor's change from the marker to now for the metric on screen, with temperature drops in blue and rises in red. The time after the focused marker is shaded on the chart, and hovering near a marker shows its label in the read-out. Markers can be removed from the strip.
+- Schema v5 adds the `events` table; existing databases migrate automatically.
+- Card sparklines use a fixed last-24-hours axis labelled `−24h · −12h · now` (previously they stretched whatever data existed across the full width, so a sensor added an hour ago looked like a day of data), show event markers as dashed lines with a flag, and shade the time after the focused marker.
+- **Card charts** setting in the Sensors window: the sparklines can show the last 15m, 1h, 3h, 6h, 12h or 24h (default). The axis labels and the card's min–max (`1h 25.6–26.5°C`) follow it, and short windows use one-minute points, so a marker's effect is easy to see.
+- All cards (thermometers and purifiers) share one fixed-width value column, so every sparkline has the same width and lines up vertically for direct comparison.
+- Every indoor thermometer card (not just the main one) shows how that room compares with outside (`+1.6°C  −9% vs 🌳`), and differences that round to zero read `+0` instead of `-0`.
+- Fixed: the app could quit silently (no crash report) right after launch when a purifier send failed, e.g. while macOS was still asking for Local Network access. SIGPIPE is now ignored and the purifier sockets use `SO_NOSIGPIPE`.
+
 ## 0.3.0 — 2026-10-19
 
 - **Indoor vs outdoor in the menu bar**: mark one thermometer as outdoor with the new tree button in the Sensors window. The menu bar then shows the main (indoor) reading and the outdoor one together, each dimmed on its own when stale. Three layouts, picked in the Sensors window: **Stacked** (default, about 75 pt wide: indoor on the top line, outdoor below, digits in aligned columns), **Columns** (icon and humidity in small type over each temperature) and **Side by side** (`⌂ 26.5° 63%  🌳 27.9° 54%`, full size).

@@ -23,6 +23,7 @@ enum PhilipsDiscovery {
         defer { close(fd) }
         var on: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
 
         let request = PhilipsProtocol.infoRequest(messageID: UInt16.random(in: 0...UInt16.max),
                                                   token: (0..<4).map { _ in UInt8.random(in: 0...255) })
@@ -166,6 +167,8 @@ final class PhilipsClient: @unchecked Sendable {
     private func openSocket() -> Bool {
         fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
         guard fd >= 0 else { return false }
+        var on: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         var addr = sockaddrIn(host, port: PhilipsProtocol.port)
         let connected = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }

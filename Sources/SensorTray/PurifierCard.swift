@@ -86,12 +86,12 @@ struct PurifierCard: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Sparkline(points: points, color: color, minimumSpan: 5)
-                    .frame(height: 22)
+                Sparkline(points: points, color: color, context: charts.sparkContext, minimumSpan: 5)
+                    .frame(height: 32)
                     .padding(.top, 2)
             }
 
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .trailing, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
@@ -116,6 +116,7 @@ struct PurifierCard: View {
                 }
             }
             .foregroundStyle(live?.status == .reachable ? .primary : .secondary)
+            .frame(width: SensorCard.valueColumnWidth, alignment: .trailing)
         }
         .padding(10)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
