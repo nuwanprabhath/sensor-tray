@@ -111,14 +111,19 @@ public struct SensorConfig: Identifiable, Equatable, Sendable {
     public var sort: Int
     /// User-picked color as `#RRGGBB`; nil uses the default palette.
     public var colorHex: String?
+    /// The one thermometer placed outside, shown next to the main (indoor)
+    /// sensor in the menu bar. Never also the main sensor.
+    public var isOutdoor: Bool
 
-    public init(id: UUID, name: String, model: SensorModel, isMain: Bool, sort: Int, colorHex: String? = nil) {
+    public init(id: UUID, name: String, model: SensorModel, isMain: Bool, sort: Int,
+                colorHex: String? = nil, isOutdoor: Bool = false) {
         self.id = id
         self.name = name
         self.model = model
         self.isMain = isMain
         self.sort = sort
         self.colorHex = colorHex
+        self.isOutdoor = isOutdoor
     }
 }
 

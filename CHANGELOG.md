@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-10-19
+
+- **Indoor vs outdoor in the menu bar**: mark one thermometer as outdoor with the new tree button in the Sensors window. The menu bar then shows the main (indoor) reading and the outdoor one together, each dimmed on its own when stale. Three layouts, picked in the Sensors window: **Stacked** (default, about 75 pt wide: indoor on the top line, outdoor below, digits in aligned columns), **Columns** (icon and humidity in small type over each temperature) and **Side by side** (`⌂ 26.5° 63%  🌳 27.9° 54%`, full size).
+- The main (indoor) card in the popover shows how it compares with outside (`+1.2°C  +5% vs 🌳`: indoor minus outdoor), and the outdoor card has a tree badge.
+- The outdoor sensor is never the main one: marking the main sensor as outdoor moves the star to the next indoor thermometer.
+- Schema v4 adds the outdoor flag; existing databases migrate automatically.
+
 ## 0.2.0 — 2026-10-17
 
 - **Long-term history**: new **1Y** and **All** ranges, plus navigation through time with **‹ ›** (one window per step), dragging the chart, or a two-finger sideways swipe on the trackpad. **Now** returns to the present. The label shows the period on screen ("Last 24 hours", "10–17 Oct 2026", "Oct 2025 – Oct 2026").

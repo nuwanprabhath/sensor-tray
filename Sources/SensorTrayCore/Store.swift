@@ -24,7 +24,7 @@ import SQLite3
 public final class Store: @unchecked Sendable {
     public enum StoreError: Error { case open(String), sql(String) }
 
-    public static let schemaVersion: Int32 = 3
+    public static let schemaVersion: Int32 = 4
 
     private var db: OpaquePointer?
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -112,7 +112,8 @@ public final class Store: @unchecked Sendable {
         """
 
     /// Brings any database up to the current schema, one transaction:
-    /// v1 (TEXT sensor ids, REAL values, no rollup) → v2 → v3 (air tables).
+    /// v1 (TEXT sensor ids, REAL values, no rollup) → v2 → v3 (air tables)
+    /// → v4 (outdoor flag).
     private func migrate() throws {
         try exec("PRAGMA journal_mode=WAL")
         let version = userVersion
@@ -123,6 +124,7 @@ public final class Store: @unchecked Sendable {
         do {
             if version < 2 { try migrateToV2(fromV1: fromV1) }
             try exec(Self.schemaV3)
+            if version < 4 { try exec("ALTER TABLE sensors ADD COLUMN is_outdoor INTEGER NOT NULL DEFAULT 0") }
             try exec("PRAGMA user_version = \(Self.schemaVersion)")
             try exec("COMMIT")
         } catch {
@@ -170,16 +172,18 @@ public final class Store: @unchecked Sendable {
     // MARK: Sensors
 
     public func sensors() -> [SensorConfig] {
-        query("SELECT id, name, model, is_main, sort, color FROM sensors ORDER BY sort, added_at") { s in
+        query("SELECT id, name, model, is_main, sort, color, is_outdoor FROM sensors ORDER BY sort, added_at") { s in
             guard let id = UUID(uuidString: text(s, 0)),
                   let model = SensorModel(rawValue: text(s, 2)) else { return nil }
             return SensorConfig(id: id, name: text(s, 1), model: model,
                                 isMain: sqlite3_column_int(s, 3) != 0, sort: Int(sqlite3_column_int(s, 4)),
-                                colorHex: sqlite3_column_type(s, 5) == SQLITE_NULL ? nil : text(s, 5))
+                                colorHex: sqlite3_column_type(s, 5) == SQLITE_NULL ? nil : text(s, 5),
+                                isOutdoor: sqlite3_column_int(s, 6) != 0)
         }
     }
 
-    /// Inserts or updates name/model/main/sort, keeping sync state and color.
+    /// Inserts or updates name/model/main/sort, keeping sync state, color and
+    /// the outdoor flag.
     public func save(_ sensor: SensorConfig) {
         run("""
             INSERT INTO sensors(id, name, model, is_main, sort, added_at) VALUES(?, ?, ?, ?, ?, ?)
@@ -192,8 +196,16 @@ public final class Store: @unchecked Sendable {
         run("UPDATE sensors SET color = ? WHERE id = ?", [hex as Any, id.uuidString])
     }
 
+    /// Makes `id` the main (indoor) sensor; it stops being the outdoor one.
     public func setMain(id: UUID) {
-        run("UPDATE sensors SET is_main = (id = ?)", [id.uuidString])
+        run("UPDATE sensors SET is_main = (id = ?1), is_outdoor = is_outdoor AND id <> ?1", [id.uuidString])
+    }
+
+    /// Marks `id` as the outdoor sensor (clearing any other, and its main
+    /// flag), or nil for none.
+    public func setOutdoor(id: UUID?) {
+        run("UPDATE sensors SET is_outdoor = (id = ?)", [id?.uuidString ?? ""])
+        if let id { run("UPDATE sensors SET is_main = 0 WHERE id = ?", [id.uuidString]) }
     }
 
     public func delete(id: UUID) {

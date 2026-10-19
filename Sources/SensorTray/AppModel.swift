@@ -107,10 +107,16 @@ final class AppModel: ObservableObject {
 
     // MARK: Derived
 
-    /// The thermometer shown in the menu bar (purifiers have no temperature).
+    /// The indoor thermometer shown in the menu bar (purifiers have no
+    /// temperature; the outdoor sensor has its own slot).
     var mainSensor: SensorConfig? {
-        let thermometers = sensors.filter { !$0.model.isAirPurifier }
-        return thermometers.first(where: \.isMain) ?? thermometers.first
+        let indoor = sensors.filter { !$0.model.isAirPurifier && !$0.isOutdoor }
+        return indoor.first(where: \.isMain) ?? indoor.first
+    }
+
+    /// The thermometer marked as outdoor, shown beside the main one.
+    var outdoorSensor: SensorConfig? {
+        sensors.first { $0.isOutdoor && !$0.model.isAirPurifier }
     }
 
     var hasPurifiers: Bool { sensors.contains { $0.model.isAirPurifier } }
@@ -201,6 +207,14 @@ final class AppModel: ObservableObject {
     func setMain(_ id: UUID) {
         store.setMain(id: id)
         reloadSensors()
+    }
+
+    /// Marks a thermometer as outdoor (or unmarks it). If it was the main
+    /// sensor, the menu bar falls back to the next indoor one.
+    func setOutdoor(_ id: UUID, _ outdoor: Bool) {
+        store.setOutdoor(id: outdoor ? id : nil)
+        reloadSensors()
+        if let first = mainSensor, !first.isMain { setMain(first.id) }
     }
 
     func remove(_ id: UUID) {

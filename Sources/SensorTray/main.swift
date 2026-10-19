@@ -159,9 +159,20 @@ enum CLI {
         do {
             try png.write(to: URL(fileURLWithPath: path))
             print("Wrote \(path) (\(Int(host.bounds.width))x\(Int(host.bounds.height)) pt)")
-            let label = MenuBarLabel.render(text: "25.1°  62%", dimmed: false)
-            if let tiff = label.tiffRepresentation, let labelPNG = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
-                try labelPNG.write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-label.png")))
+            let inside = Reading(tempC: 25.1, humidity: 62, battery: nil)
+            let indoor = MenuBarLabel.Part(symbol: "house.fill", reading: inside, dimmed: false)
+            let outdoor = MenuBarLabel.Part(symbol: "tree.fill", reading: Reading(tempC: 18.4, humidity: 81, battery: nil), dimmed: false)
+            var labels: [(String, NSImage)] = [
+                ("label", MenuBarLabel.render(parts: [MenuBarLabel.Part(symbol: "thermometer.medium", reading: inside, dimmed: false)],
+                                              layout: .stacked)),
+            ]
+            for layout in MenuBarLayout.allCases {
+                labels.append(("label-\(layout.rawValue)", MenuBarLabel.render(parts: [indoor, outdoor], layout: layout)))
+            }
+            for (suffix, label) in labels {
+                if let tiff = label.tiffRepresentation, let labelPNG = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                    try labelPNG.write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-\(suffix).png")))
+                }
             }
         } catch {
             print("Failed to write \(path): \(error.localizedDescription)")

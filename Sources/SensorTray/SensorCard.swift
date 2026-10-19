@@ -20,7 +20,12 @@ struct SensorCard: View {
                     Text(sensor.name)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
-                    if sensor.isMain && model.sensors.count > 1 {
+                    if sensor.isOutdoor {
+                        Image(systemName: "tree.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.green)
+                            .help("Outdoor sensor, shown in the menu bar")
+                    } else if sensor.id == model.mainSensor?.id && model.sensors.count > 1 {
                         Image(systemName: "star.fill")
                             .font(.system(size: 9))
                             .foregroundStyle(.yellow)
@@ -62,6 +67,18 @@ struct SensorCard: View {
                     Text(live.map { String(format: "%.0f%%", $0.reading.humidity) } ?? "--")
                         .font(.system(size: 14, weight: .medium, design: .rounded).monospacedDigit())
                 }
+                if let comparison {
+                    HStack(spacing: 3) {
+                        Text(comparison.text)
+                        Image(systemName: "tree.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.green)
+                    }
+                    .font(.system(size: 10, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+                    .help(comparison.help)
+                }
             }
             .foregroundStyle(live?.isStale ?? true ? .secondary : .primary)
         }
@@ -69,6 +86,16 @@ struct SensorCard: View {
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
     }
 
+    /// On the main (indoor) card: indoor minus outdoor, so "+1.2°C" means
+    /// it's 1.2° warmer inside than out.
+    private var comparison: (text: String, help: String)? {
+        guard sensor.id == model.mainSensor?.id, let outdoor = model.outdoorSensor,
+              let inside = model.latest[sensor.id]?.reading, let outside = model.latest[outdoor.id]?.reading else { return nil }
+        let dt = inside.tempC - outside.tempC
+        let dh = inside.humidity - outside.humidity
+        return (String(format: "%+.1f°C  %+.0f%% vs", dt, dh),
+                "\(sensor.name) compared with \(outdoor.name): positive means warmer / more humid inside")
+    }
 
     @ViewBuilder
     private func status(_ live: LiveReading?) -> some View {

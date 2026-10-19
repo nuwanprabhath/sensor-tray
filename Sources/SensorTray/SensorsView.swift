@@ -2,12 +2,14 @@ import SensorTrayCore
 import ServiceManagement
 import SwiftUI
 
-/// Manage sensors: rename, choose the menu bar one, reorder, export, remove,
+/// Manage sensors: rename, choose the menu bar and outdoor ones, reorder,
+/// export, remove,
 /// and add newly discovered ones.
 struct SensorsView: View {
     @EnvironmentObject private var model: AppModel
     @StateObject private var launchAtLogin = ViewState(LoginItem.isEnabled)
     @StateObject private var confirmRemove = ViewState<SensorConfig?>(nil)
+    @AppStorage(MenuBarLayout.key) private var layout: MenuBarLayout = .stacked
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -46,6 +48,21 @@ struct SensorsView: View {
                         if index > 0 { Divider() }
                         NearbyRow(sensor: sensor)
                     }
+                }
+            }
+
+            if model.outdoorSensor != nil {
+                HStack(spacing: 8) {
+                    Text("Menu bar")
+                    Picker("Menu bar", selection: $layout) {
+                        ForEach(MenuBarLayout.allCases) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                    Text(layout.caption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -128,16 +145,30 @@ private struct ConfiguredRow: View {
             Spacer()
 
             if sensor.model.isAirPurifier {
-                // Keeps the columns aligned; purifiers can't be the menu bar sensor.
+                // Keeps the columns aligned; purifiers can't be in the menu bar.
+                Image(systemName: "tree").hidden()
                 Image(systemName: "star").hidden()
             } else {
                 Button {
-                    model.setMain(sensor.id)
+                    model.setOutdoor(sensor.id, !sensor.isOutdoor)
                 } label: {
-                    Image(systemName: sensor.isMain ? "star.fill" : "star")
-                        .foregroundStyle(sensor.isMain ? .yellow : .secondary)
+                    Image(systemName: sensor.isOutdoor ? "tree.fill" : "tree")
+                        .foregroundStyle(sensor.isOutdoor ? .green : .secondary)
                 }
-                .help(sensor.isMain ? "Shown in the menu bar" : "Show in the menu bar")
+                .help(sensor.isOutdoor ? "Outdoor sensor, shown next to the indoor one in the menu bar. Click to make it indoor."
+                                       : "Mark as the outdoor sensor")
+                if sensor.isOutdoor {
+                    // Already in the menu bar, in the outdoor slot.
+                    Image(systemName: "star").hidden()
+                } else {
+                    Button {
+                        model.setMain(sensor.id)
+                    } label: {
+                        Image(systemName: sensor.isMain ? "star.fill" : "star")
+                            .foregroundStyle(sensor.isMain ? .yellow : .secondary)
+                    }
+                    .help(sensor.isMain ? "Shown in the menu bar" : "Show in the menu bar")
+                }
             }
 
             Button { model.move(sensor.id, by: -1) } label: { Image(systemName: "chevron.up") }

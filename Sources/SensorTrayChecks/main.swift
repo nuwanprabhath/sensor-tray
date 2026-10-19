@@ -181,6 +181,26 @@ do {
     check(store.sensors().map(\.name) == ["Living room", "Bedroom"], "store sensors order")
     store.setMain(id: b)
     check(store.sensors().filter(\.isMain).map(\.id) == [b], "store unique main")
+    check(store.sensors().allSatisfy { !$0.isOutdoor }, "store outdoor defaults off")
+    store.setOutdoor(id: a)
+    check(store.sensors().filter(\.isOutdoor).map(\.id) == [a], "store sets outdoor")
+    store.setOutdoor(id: b)
+    let afterOutdoor = store.sensors()
+    check(afterOutdoor.filter(\.isOutdoor).map(\.id) == [b] && afterOutdoor.allSatisfy { !$0.isMain },
+          "store unique outdoor, which is never main")
+    var renamedOutdoor = afterOutdoor[1]
+    renamedOutdoor.name = "Garden"
+    store.save(renamedOutdoor)
+    check(store.sensors()[1].isOutdoor, "store save keeps outdoor")
+    store.setMain(id: b)
+    check(store.sensors().filter(\.isMain).map(\.id) == [b] && store.sensors().allSatisfy { !$0.isOutdoor },
+          "making the outdoor sensor main clears outdoor")
+    store.setOutdoor(id: a)
+    store.setOutdoor(id: nil)
+    check(store.sensors().allSatisfy { !$0.isOutdoor } && store.sensors()[1].isMain, "store clears outdoor")
+    var restored = store.sensors()[1]
+    restored.name = "Bedroom"
+    store.save(restored)
     var renamed = store.sensors()[0]
     renamed.name = "Lounge"
     store.save(renamed)
@@ -253,6 +273,7 @@ do {
     let sensors = store.sensors()
     check(sensors.map(\.name) == ["Living room", "Bedroom"], "migration keeps sensors \(sensors.map(\.name))")
     check(sensors.first?.colorHex == "#FF8800" && sensors.first?.isMain == true, "migration keeps color and main")
+    check(sensors.allSatisfy { !$0.isOutdoor }, "migration adds outdoor flag, off")
     let raw = store.series(a, from: 0, to: 1000, bucketMinutes: 1)
     check(raw.count == 3 && near(raw.first?.tempC, 25.1) && near(raw.first?.humidity, 61.9), "migration keeps readings \(raw)")
     check(near(store.series(b, from: 0, to: 1000, bucketMinutes: 1).first?.tempC, -3.4), "migration negative temps")
@@ -496,7 +517,7 @@ do {
     check(store.aggregateAir(p, from: base, to: base + 119, bucketMinutes: 1).isEmpty && store.earliestMinute() == nil, "air deleted with sensor")
 }
 
-// MARK: - Schema v2 → v3
+// MARK: - Schema v2 → v4
 
 do {
     let path = NSTemporaryDirectory() + "sensortray-v2-\(UUID().uuidString).sqlite"
@@ -517,7 +538,7 @@ do {
         """, nil, nil, nil)
     sqlite3_close(db)
     let store = try Store(path: path)
-    check(store.userVersion == 3 && store.sensors().first?.name == "Kept", "v2 → v3 keeps data")
+    check(store.userVersion == Store.schemaVersion && store.sensors().first?.name == "Kept" && store.sensors().first?.isOutdoor == false, "v2 → v4 keeps data, outdoor off")
     if let kept = store.sensors().first {
         check(near(store.series(kept.id, from: 0, to: 1000, bucketMinutes: 1).first?.tempC, 21.5), "v2 → v3 keeps samples")
         store.insertAir(kept.id, minute: 601, pm25: 3, allergenIndex: 1)
