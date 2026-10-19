@@ -3,7 +3,7 @@
 A native macOS menu bar app for Bluetooth thermo-hygrometers and Wi-Fi air purifiers. It shows the temperature and humidity of your main sensor in the menu bar (and, if you have one outside, the outdoor sensor next to it), and a click opens every sensor with a chart of its history. It replaces juggling the Govee and ThermoPro phone apps.
 
 <p align="center">
-  <img src="docs/screenshot-dark.png" alt="Sensor Tray popover showing two sensor cards with live temperature, humidity and 24-hour sparklines, above a combined temperature chart" width="360">
+  <img src="docs/screenshot-dark.png" alt="Sensor Tray popover: cards for Living room, Outdoor, Bedroom and an air purifier, each with a one-hour sparkline marked where the windows were opened, above a six-hour temperature chart with the marker and a strip showing each room cooling since then" width="360">
 </p>
 
 ## Supported sensors
@@ -20,10 +20,10 @@ You can add as many sensors of these models as you like and name them.
 ## Features
 
 - **Menu bar**: the main (★) sensor's `25.1°  62%`, dimmed when the reading is more than 10 minutes old.
-- **Indoor vs outdoor**: mark a sensor as outdoor (the tree button in the Sensors window) and the menu bar shows both at a glance. Choose the layout in the Sensors window: **Stacked** (the default and narrowest: indoor on the top line, outdoor below), **Columns** (humidity in small type over each temperature, like a CPU meter) or **Side by side** (full size). Every indoor card in the popover shows how that room compares with outside (`+6.7°C  −19% vs 🌳`: indoor minus outdoor).
-- **Popover**: a card per sensor (temperature, humidity, battery, 24 h min–max and a sparkline) and a combined chart with a temperature/humidity toggle and a hover read-out. Gaps (Mac asleep, sensor out of range) show as breaks in the line, not misleading straight bridges.
+- **Indoor vs outdoor**: mark a sensor as outdoor (the tree button in the Sensors window) and the menu bar shows both at a glance, each dimmed on its own when stale. Pick the layout under **Menu bar** in the Sensors window: **Stacked** (the default and narrowest: indoor on the top line, outdoor below), **Columns** (humidity in small type over each temperature, like a CPU meter) or **Side by side** (full size). Every indoor card shows how that room compares with outside (`+1.6°C  −12% vs 🌳`: indoor minus outdoor).
+- **Popover**: a card per sensor (temperature, humidity, battery, min–max and a sparkline) and a combined chart with a temperature/humidity toggle and a hover read-out. The card sparklines share one time axis and width, so they can be compared straight down the column. They show the last 24 hours by default; choose 15m, 1h, 3h, 6h or 12h under **Card charts** in the Sensors window. Gaps (Mac asleep, sensor out of range) show as breaks in the chart, not misleading straight bridges.
 - **History for as long as you run it**: every minute reading is kept, with no expiry. Choose **6H / 24H / 7D / 30D / 1Y / All**, then step back with **‹ ›**, drag the chart, or swipe sideways on the trackpad to move through time; **Now** jumps back to the present. At 1Y and All, each sensor also gets a shaded daily min–max band, so seasonal changes stand out.
-- **Event markers**: press **Mark** above the chart when something happens (windows opened, heating off) to drop a flag on the timeline. It stays at that moment as the chart moves on, the time after it is shaded, and the card sparklines show it too (they cover the last 24 hours by default; pick 15m, 1h, 3h, 6h or 12h under **Card charts** in the Sensors window), and a strip under the chart shows each sensor's change since then (`Living room 26.4°C → 26.1°C −0.3°C`). Label it with a quick preset or your own words, click any flag to focus it, and hover to see its label. Markers are kept with the history.
+- **Event markers**: press **Mark** above the chart when something happens (windows opened, heating off). A flag stays at that moment on the chart and on every card's sparkline as time moves on, with the time after it shaded. A strip under the chart shows each sensor's change since then (`Living room 26.0°C → 25.4°C −0.6°C`). Label a marker with a preset or your own words, click a flag to focus it, or hover to see its label. Markers are kept with the history.
 - **History backfill**: on launch, on wake, every 6 hours and on demand, the app connects briefly to each sensor and downloads only the stretch of its onboard memory that's missing locally, then disconnects so the phone apps keep working. If a sensor doesn't connect (weak signal), it retries 10 minutes later.
 - **Air purifiers**: Philips Air+ purifiers are read locally over Wi-Fi, without the Philips cloud or your Philips account. A card shows PM2.5 with an air-quality level (Good / Fair / Poor / Very poor), the allergen index, the mode, and filter warnings ("Replace the filter"), and the chart gets a PM2.5 view. It's read-only; Sensor Tray never changes the purifier's settings.
 - **Sensors window**: add nearby sensors (with signal bars, so you can tell which is which), rename, pick each sensor's color (click its dot), reorder, choose the menu bar sensor and the outdoor one, export history as CSV, and remove. It also has a launch-at-login toggle.
@@ -43,7 +43,7 @@ You can add as many sensors of these models as you like and name them.
 </p>
 
 <p align="center">
-  <img src="docs/sensors.png" alt="Sensors window listing configured sensors with rename, star, reorder, export and remove controls, a Nearby section and a Launch at login toggle" width="480">
+  <img src="docs/sensors.png" alt="Sensors window listing configured sensors with outdoor, star, reorder, export and remove controls, a Nearby section, Card charts and Menu bar layout pickers, and a Launch at login toggle" width="480">
 </p>
 
 ## Download & install
