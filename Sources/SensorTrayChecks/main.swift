@@ -538,6 +538,96 @@ do {
     check(reader.events(from: 0, to: 5_000).map(\.label) == ["Heating off"], "events readable read-only")
 }
 
+// MARK: - Calibration
+
+do {
+    func pairs(_ count: Int, temp: (Int) -> Double, hum: (Int) -> Double,
+               refTemp: (Double) -> Double, refHum: (Double) -> Double) -> [CalibrationPair] {
+        (0..<count).map { i in
+            let t = temp(i), h = hum(i)
+            return CalibrationPair(minute: i * 10, rawTemp: t, rawHumidity: h, refTemp: refTemp(t), refHumidity: refHum(h))
+        }
+    }
+    check(Calibrator.fit(pairs(5, temp: { _ in 20 }, hum: { _ in 50 }, refTemp: { $0 }, refHum: { $0 })) == nil,
+          "calibration needs an hour of pairs")
+
+    // Narrow range: the sensor reads 0.4 °C high and 3 % low → constant offsets.
+    let narrow = pairs(36, temp: { 24 + Double($0 % 6) * 0.2 }, hum: { 50 + Double($0 % 4) },
+                       refTemp: { $0 - 0.4 }, refHum: { $0 + 3 })
+    if let fit = Calibrator.fit(narrow) {
+        check(fit.temperature.isConstant && near(fit.temperature.offset, -0.4), "constant temp offset \(fit.temperature)")
+        check(fit.humidity.isConstant && near(fit.humidity.offset, 3), "constant humidity offset \(fit.humidity)")
+        check(near(fit.apply(Reading(tempC: 25, humidity: 60, battery: 80)).tempC, 24.6)
+              && fit.apply(Reading(tempC: 25, humidity: 99, battery: 80)).humidity == 100, "fit applies and clamps humidity")
+        check(fit.temperatureError < 0.01, "exact fit has no residual \(fit.temperatureError)")
+    } else { check(false, "narrow fit") }
+
+    // Wide range, error grows with temperature: ref = raw − 0.2 − 0.05·(raw − 20).
+    let wide = pairs(60, temp: { 15 + Double($0) * 0.2 }, hum: { 40 + Double($0) * 0.5 },
+                     refTemp: { $0 - 0.2 - 0.05 * ($0 - 20) }, refHum: { $0 * 1.1 - 2 })
+    if let fit = Calibrator.fit(wide) {
+        check(!fit.temperature.isConstant && near(fit.temperature.slope, -0.05), "temperature slope \(fit.temperature)")
+        check(near(fit.temperature.apply(20), 19.8) && near(fit.temperature.apply(25), 24.55), "correction varies with temperature")
+        // Beyond the 15–26.8 °C seen, the correction holds at its edge value.
+        check(near(fit.temperature.delta(at: 40), fit.temperature.delta(at: fit.temperature.high)), "correction clamps past range")
+        check(near(fit.humidity.slope, 0.1), "humidity slope \(fit.humidity)")
+    } else { check(false, "wide fit") }
+
+    // An outlier (sensor handled mid-session) is dropped.
+    var spiky = pairs(30, temp: { 22 + Double($0 % 5) * 0.1 }, hum: { _ in 50 }, refTemp: { $0 + 0.5 }, refHum: { $0 })
+    spiky[10] = CalibrationPair(minute: 100, rawTemp: 29, rawHumidity: 50, refTemp: 22.2, refHumidity: 50)
+    if let fit = Calibrator.fit(spiky) {
+        check(near(fit.temperature.offset, 0.5) && fit.pairs == 29, "outlier dropped \(fit.temperature) \(fit.pairs)")
+    } else { check(false, "spiky fit") }
+
+    // An absurd slope is capped.
+    let steep = pairs(40, temp: { 10 + Double($0) * 0.5 }, hum: { _ in 50 }, refTemp: { $0 * 2 }, refHum: { $0 })
+    check(Calibrator.fit(steep).map { abs($0.temperature.slope) <= Calibrator.maxSlope } == true, "slope capped")
+
+    // Store: sessions, fit, pairs and cleanup.
+    let path = NSTemporaryDirectory() + "sensortray-cal-\(UUID().uuidString).sqlite"
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let store = try Store(path: path)
+    let raw = UUID(), ref = UUID(), other = UUID()
+    store.save(SensorConfig(id: raw, name: "Bedroom", model: .tp357s, isMain: false, sort: 0))
+    store.save(SensorConfig(id: ref, name: "Living room", model: .h5075, isMain: true, sort: 1))
+    store.save(SensorConfig(id: other, name: "Outdoor", model: .h5075, isMain: false, sort: 2))
+    for minute in 0..<120 {
+        store.insertLive(raw, minute: 1_000 + minute, reading: Reading(tempC: 25.4, humidity: 47, battery: nil))
+        store.insertLive(ref, minute: 1_000 + minute, reading: Reading(tempC: 25.0, humidity: 50, battery: nil))
+    }
+    let stored = store.calibrationPairs(sensor: raw, reference: ref, from: 1_000, to: 1_119)
+    check(stored.count == 12 && near(stored.first?.rawTemp, 25.4) && near(stored.first?.refHumidity, 50),
+          "calibration pairs per 10 minutes \(stored.count)")
+    check(store.calibrationPairs(sensor: raw, reference: ref, from: 1_000, to: 1_003).isEmpty, "pairs need 5 shared minutes")
+    let session = store.addCalibrationSession(sensor: raw, reference: ref, start: 1_000, end: 1_119, settle: 30)
+    let fit = Calibrator.fit(stored)
+    store.setCalibrationFit(sensor: raw, fit: fit)
+    var cals = store.calibrations()
+    check(cals.count == 1 && cals[0].reference == ref && cals[0].enabled && cals[0].sessions.map(\.id) == [session]
+          && cals[0].fit == fit && fit != nil, "calibration round trip")
+    store.setCalibrationEnabled(sensor: raw, enabled: false)
+    check(store.calibrations().first?.enabled == false, "calibration disabled")
+    store.addCalibrationSession(sensor: raw, reference: ref, start: 2_000, end: 2_100, settle: 0)
+    check(store.calibrations().first?.sessions.count == 2, "sessions accumulate")
+    store.addCalibrationSession(sensor: raw, reference: other, start: 3_000, end: 3_100, settle: 0)
+    cals = store.calibrations()
+    check(cals.count == 1 && cals[0].reference == other && cals[0].sessions.count == 1 && cals[0].fit == nil,
+          "new reference replaces calibration")
+    store.deleteCalibrationSession(id: cals[0].sessions[0].id)
+    check(store.calibrations().first?.sessions.isEmpty == true, "session deleted")
+    store.delete(id: other)
+    check(store.calibrations().isEmpty, "deleting the reference removes the calibration")
+}
+
+do {
+    let fit = CalibrationFit(temperature: LinearCorrection(offset: -0.1), humidity: LinearCorrection(offset: 7.2),
+                             pairs: 6, temperatureError: 0, humidityError: 0)
+    let csv = CSV.render([HistoryPoint(minute: 0, tempC: 25, humidity: 50)], sensorName: "Bedroom", calibration: fit)
+    check(csv == "timestamp,sensor,temperature_c,humidity_pct,temperature_c_calibrated,humidity_pct_calibrated\n"
+          + "1970-01-01T00:00:00Z,Bedroom,25,50,24.9,57.2\n", "CSV calibrated columns \(csv)")
+}
+
 // MARK: - Schema v2 → v5
 
 do {

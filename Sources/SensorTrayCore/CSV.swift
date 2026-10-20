@@ -1,12 +1,20 @@
 import Foundation
 
 public enum CSV {
-    public static func render(_ points: [HistoryPoint], sensorName: String) -> String {
+    /// Raw readings, plus calibrated columns when `calibration` is given.
+    public static func render(_ points: [HistoryPoint], sensorName: String, calibration: CalibrationFit? = nil) -> String {
         let formatter = ISO8601DateFormatter()
         let name = escape(sensorName)
-        var lines = ["timestamp,sensor,temperature_c,humidity_pct"]
+        var header = "timestamp,sensor,temperature_c,humidity_pct"
+        if calibration != nil { header += ",temperature_c_calibrated,humidity_pct_calibrated" }
+        var lines = [header]
         for p in points {
-            lines.append("\(formatter.string(from: p.date)),\(name),\(number(p.tempC)),\(number(p.humidity))")
+            var line = "\(formatter.string(from: p.date)),\(name),\(number(p.tempC)),\(number(p.humidity))"
+            if let calibration {
+                let c = calibration.apply(Reading(tempC: p.tempC, humidity: p.humidity, battery: nil))
+                line += ",\(number(c.tempC)),\(number(c.humidity))"
+            }
+            lines.append(line)
         }
         return lines.joined(separator: "\n") + "\n"
     }

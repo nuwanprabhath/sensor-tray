@@ -129,6 +129,7 @@ final class ChartModel: ObservableObject {
         let sensors: [SensorRef]
         let selectedEvent: Int?
         let sparkWindow: SparkWindow
+        let corrections: [UUID: CalibrationFit]
     }
 
     private static let rangeKey = "chartRange"
@@ -138,6 +139,8 @@ final class ChartModel: ObservableObject {
     private var sensors: [SensorRef] = []
     /// The marker picked by clicking its flag; nil follows the newest one.
     private var selectedEvent: Int?
+    /// Calibrations to apply, by sensor (empty when the toggle is off).
+    private var corrections: [UUID: CalibrationFit] = [:]
     private var inFlight = false
     private var pending: Request?
 
@@ -147,6 +150,12 @@ final class ChartModel: ObservableObject {
         window = ChartWindow(range: saved ?? .day)
         metric = UserDefaults.standard.string(forKey: Self.metricKey).flatMap(ChartMetric.init(rawValue:)) ?? .temperature
         sparkWindow = SparkWindow(rawValue: UserDefaults.standard.integer(forKey: SparkWindow.key)) ?? .day
+    }
+
+    func setCorrections(_ newCorrections: [UUID: CalibrationFit]) {
+        guard newCorrections != corrections else { return }
+        corrections = newCorrections
+        reload()
     }
 
     func setSparkWindow(_ newWindow: SparkWindow) {
@@ -218,7 +227,7 @@ final class ChartModel: ObservableObject {
     /// Re-queries the current window and the sparklines (e.g. new readings).
     func reload() {
         pending = Request(window: window, metric: metric, sensors: sensors, selectedEvent: selectedEvent,
-                          sparkWindow: sparkWindow)
+                          sparkWindow: sparkWindow, corrections: corrections)
         startNext()
     }
 
@@ -255,13 +264,15 @@ final class ChartModel: ObservableObject {
         let charted = request.sensors.filter { $0.isAirPurifier == (request.metric == .pm25) }
         let series = charted.map { sensor -> ChartSeries in
             let points = points(for: sensor, metric: request.metric, reader: reader,
-                                from: span.lowerBound, to: span.upperBound, bucket: bucket, offset: offset)
+                                from: span.lowerBound, to: span.upperBound, bucket: bucket, offset: offset,
+                                correction: request.corrections[sensor.id])
             return ChartSeries(id: sensor.id, points: points, segments: segments(points, bucket: bucket))
         }
         let focused = request.selectedEvent.flatMap(reader.event(id:)) ?? reader.latestEvent()
         let focus = focused.map { event in
             EventFocus(event: event, changes: charted.compactMap { sensor in
-                change(for: sensor, metric: request.metric, since: event.minute, now: now, reader: reader)
+                change(for: sensor, metric: request.metric, since: event.minute, now: now, reader: reader,
+                       correction: request.corrections[sensor.id])
             })
         }
         let snapshot = ChartSnapshot(window: window, metric: request.metric, span: span, bucketMinutes: bucket,
@@ -273,7 +284,8 @@ final class ChartModel: ObservableObject {
         for sensor in request.sensors {
             sparklines[sensor.id] = points(for: sensor, metric: sensor.isAirPurifier ? .pm25 : .temperature, reader: reader,
                                            from: now - request.sparkWindow.minutes, to: now,
-                                           bucket: request.sparkWindow.bucketMinutes, offset: 0)
+                                           bucket: request.sparkWindow.bucketMinutes, offset: 0,
+                                           correction: request.corrections[sensor.id])
         }
         let sparkSpan = (now - request.sparkWindow.minutes)...now
         let sparkContext = SparkContext(window: request.sparkWindow, span: sparkSpan, events: reader.events(from: sparkSpan.lowerBound, to: now),
@@ -282,24 +294,32 @@ final class ChartModel: ObservableObject {
     }
 
     nonisolated private static func points(for sensor: SensorRef, metric: ChartMetric, reader: Store,
-                                           from: Int, to: Int, bucket: Int, offset: Int) -> [ChartPoint] {
+                                           from: Int, to: Int, bucket: Int, offset: Int,
+                                           correction: CalibrationFit? = nil) -> [ChartPoint] {
         if sensor.isAirPurifier {
             return reader.aggregateAir(sensor.id, from: from, to: to, bucketMinutes: bucket, alignOffset: offset)
                 .map { ChartPoint(minute: $0.minute, avg: $0.pmAvg, low: $0.pmMin, high: $0.pmMax) }
         }
         let climate = reader.aggregate(sensor.id, from: from, to: to, bucketMinutes: bucket, alignOffset: offset)
+        // Corrections are monotonic (|slope| ≤ 0.2), so low/avg/high keep their order.
         switch metric {
-        case .humidity: return climate.map { ChartPoint(minute: $0.minute, avg: $0.humAvg, low: $0.humMin, high: $0.humMax) }
-        default: return climate.map { ChartPoint(minute: $0.minute, avg: $0.tempAvg, low: $0.tempMin, high: $0.tempMax) }
+        case .humidity:
+            let c = correction?.humidity ?? .identity
+            return climate.map { ChartPoint(minute: $0.minute, avg: c.apply($0.humAvg), low: c.apply($0.humMin), high: c.apply($0.humMax)) }
+        default:
+            let c = correction?.temperature ?? .identity
+            return climate.map { ChartPoint(minute: $0.minute, avg: c.apply($0.tempAvg), low: c.apply($0.tempMin), high: c.apply($0.tempMax)) }
         }
     }
 
     /// Reading at the marker (nearest minute within 15) and the latest one
     /// (within the last hour); nil if either is missing.
     nonisolated private static func change(for sensor: SensorRef, metric: ChartMetric, since minute: Int, now: Int,
-                                           reader: Store) -> EventFocus.Change? {
-        let around = points(for: sensor, metric: metric, reader: reader, from: minute - 15, to: minute + 15, bucket: 1, offset: 0)
-        let recent = points(for: sensor, metric: metric, reader: reader, from: now - 60, to: now, bucket: 1, offset: 0)
+                                           reader: Store, correction: CalibrationFit?) -> EventFocus.Change? {
+        let around = points(for: sensor, metric: metric, reader: reader, from: minute - 15, to: minute + 15, bucket: 1, offset: 0,
+                            correction: correction)
+        let recent = points(for: sensor, metric: metric, reader: reader, from: now - 60, to: now, bucket: 1, offset: 0,
+                            correction: correction)
         guard let at = around.min(by: { abs($0.minute - minute) < abs($1.minute - minute) }),
               let latest = recent.last, latest.minute >= at.minute else { return nil }
         return EventFocus.Change(id: sensor.id, from: at.avg, to: latest.avg)

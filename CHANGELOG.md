@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 — 2026-10-20
+
+- **Calibration**: correct one thermometer to match another, from periods when the two sat side by side. Open **Sensors → Calibrate sensors…**, pick the sensor to correct and the reference, set when they were together, and how many minutes to skip while the moved sensor settles (30 by default). A live preview shows the number of 10-minute pairs, the fitted temperature and humidity corrections, the difference left after correcting, and a chart of the measured difference against the correction.
+- The fit is robust and only as complex as the data supports. A Theil–Sen first pass rejects outliers, then least squares fits the rest. The correction varies with the reading when the sessions span at least 3 °C / 10 %RH (slope capped at ±0.2); otherwise it's a constant offset. It holds at its edge value outside the calibrated range. Sessions accumulate and are fitted together, calibrations can chain (A → B → C), and cycles are prevented.
+- Corrections apply when displaying, never to stored data: cards, menu bar, indoor/outdoor comparisons, all charts and sparklines, hover read-outs and marker changes. A **Calibrated** switch in the popover footer shows raw readings everywhere instead. Calibrated cards show a tuning fork with a mini switch next to the name, to turn that sensor's calibration off or on right there (the tooltip gives the correction). CSV exports add `temperature_c_calibrated` / `humidity_pct_calibrated` columns.
+- Each calibration can be switched off, have sessions removed (it refits), or be deleted, in the Calibration window. Removing a sensor removes the calibrations that use it.
+- Schema v6 adds the `calibrations` and `calibration_sessions` tables. Developer tool: `--calibrate <sensor> <reference> <start> [end] [settle]` prints the pairs and the fit.
+
 ## 0.4.0 — 2026-10-19
 
 - **Event markers**: a **Mark** button above the chart drops a marker at the current minute, so you can see what happens afterwards (open the windows and watch the rooms cool). Markers appear on every chart and range as dashed lines with a flag, move with time like the readings, and are kept with the history.

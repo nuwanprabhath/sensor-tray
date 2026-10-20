@@ -48,6 +48,10 @@ final class AppModel: ObservableObject {
     /// Purifiers that answered the last network discovery, by sensor id.
     @Published private(set) var discoveredPurifiers: [UUID: PurifierInfo] = [:]
     @Published private(set) var isDiscoveringPurifiers = false
+    /// Calibrations by the sensor they correct (see AppModel+Calibration).
+    @Published var calibrations: [UUID: SensorCalibration] = [:]
+    /// The popover's Calibrated toggle: off shows raw readings everywhere.
+    @Published var useCalibration = UserDefaults.standard.object(forKey: "useCalibration") as? Bool ?? true
 
     let store: Store
     /// Chart queries run on their own read-only connection, off the main thread.
@@ -80,6 +84,8 @@ final class AppModel: ObservableObject {
         charts = ChartModel(reader: try? Store(path: path, readOnly: true))
         reloadSensors()
         restoreLastReadings()
+        // Refit from the stored sessions: cheap, and keeps chains consistent.
+        refitAll()
 
         ble.onStateChange = { [weak self] state in
             guard let self else { return }
@@ -223,6 +229,7 @@ final class AppModel: ObservableObject {
         latest[id] = nil
         air[id] = nil
         reloadSensors()
+        reloadCalibrations()
         if let first = mainSensor, !first.isMain {
             setMain(first.id)
         }
@@ -276,7 +283,9 @@ final class AppModel: ObservableObject {
         if sensor.model.isAirPurifier {
             csv = CSV.renderAir(store.aggregateAir(id, from: 0, to: Int.nowMinute(), bucketMinutes: 1), sensorName: sensor.name)
         } else {
-            csv = CSV.render(store.series(id, from: 0, to: Int.nowMinute(), bucketMinutes: 1), sensorName: sensor.name)
+            let calibration = calibrations[id].flatMap { $0.enabled ? $0.fit : nil }
+            csv = CSV.render(store.series(id, from: 0, to: Int.nowMinute(), bucketMinutes: 1), sensorName: sensor.name,
+                             calibration: calibration)
         }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]

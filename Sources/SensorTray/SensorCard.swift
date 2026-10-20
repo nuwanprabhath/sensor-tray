@@ -13,7 +13,7 @@ struct SensorCard: View {
     let sensor: SensorConfig
 
     var body: some View {
-        let live = model.latest[sensor.id]
+        let live = model.displayReading(sensor.id)
         let color = model.color(for: sensor)
         let points = charts.sparklines[sensor.id] ?? []
 
@@ -24,6 +24,9 @@ struct SensorCard: View {
                     Text(sensor.name)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
+                    if let calibration = model.calibrations[sensor.id], let fit = calibration.fit {
+                        CalibrationSwitch(sensor: sensor.id, calibration: calibration, fit: fit)
+                    }
                     if sensor.isOutdoor {
                         Image(systemName: "tree.fill")
                             .font(.system(size: 9))
@@ -99,7 +102,7 @@ struct SensorCard: View {
     /// means it's 1.2° warmer in this room than outside.
     private var comparison: (text: String, help: String)? {
         guard !sensor.isOutdoor, let outdoor = model.outdoorSensor,
-              let inside = model.latest[sensor.id]?.reading, let outside = model.latest[outdoor.id]?.reading else { return nil }
+              let inside = model.displayReading(sensor.id)?.reading, let outside = model.displayReading(outdoor.id)?.reading else { return nil }
         let dt = Self.signed(inside.tempC - outside.tempC, decimals: 1)
         let dh = Self.signed(inside.humidity - outside.humidity, decimals: 0)
         return ("\(dt)°C  \(dh)% vs",
@@ -254,5 +257,39 @@ struct Sparkline: View {
         path.addLine(to: CGPoint(x: firstX, y: size.height))
         path.closeSubpath()
         return path
+    }
+}
+
+/// Tuning fork plus a mini switch on a calibrated card: turns this sensor's
+/// calibration on or off right there (same as in the Calibration window).
+private struct CalibrationSwitch: View {
+    @EnvironmentObject private var model: AppModel
+    let sensor: UUID
+    let calibration: SensorCalibration
+    let fit: CalibrationFit
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "tuningfork")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(calibration.enabled && model.useCalibration ? Color.accentColor : Color.secondary)
+            Toggle("Calibration", isOn: Binding(get: { calibration.enabled },
+                                                set: { model.setCalibrationEnabled(sensor: sensor, $0) }))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .disabled(!model.useCalibration)
+        }
+        .help(help)
+    }
+
+    private var help: String {
+        let reference = model.calibrationReferenceName(sensor)
+        guard model.useCalibration else {
+            return "Calibration to match \(reference) is paused: Calibrated is off at the bottom of the popover."
+        }
+        return calibration.enabled
+            ? "Calibrated to match \(reference): \(fit.summary). Switch off to see this sensor's raw readings."
+            : "Showing raw readings. Switch on to calibrate to match \(reference) (\(fit.summary))."
     }
 }

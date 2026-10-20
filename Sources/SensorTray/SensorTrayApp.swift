@@ -21,6 +21,13 @@ struct SensorTrayApp: App {
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+
+        Window("Calibration", id: "calibration") {
+            CalibrationView()
+                .environmentObject(model)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }
 
@@ -89,7 +96,7 @@ struct MenuBarLabel: View {
     }
 
     private func part(_ sensor: SensorConfig?, symbol: String) -> Part {
-        let live = sensor.flatMap { model.latest[$0.id] }
+        let live = sensor.flatMap { model.displayReading($0.id) }
         return Part(symbol: symbol, reading: live?.reading, dimmed: live?.isStale ?? true)
     }
 

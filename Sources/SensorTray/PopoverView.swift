@@ -89,6 +89,17 @@ struct PopoverView: View {
 
             Spacer()
 
+            if model.hasCalibrations {
+                Toggle(isOn: Binding(get: { model.useCalibration }, set: { model.setUseCalibration($0) })) {
+                    Text("Calibrated")
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .fixedSize()
+                .help("On: readings, charts and the menu bar use your calibrations. Off: raw sensor readings.")
+                Spacer()
+            }
+
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }
         .buttonStyle(.plain)
@@ -111,7 +122,8 @@ struct PopoverView: View {
                     Image(systemName: model.lastSyncError == nil ? "arrow.triangle.2.circlepath" : "exclamationmark.arrow.triangle.2.circlepath")
                         .foregroundStyle(model.lastSyncError == nil ? Color.secondary : Color.orange)
                     if let last = model.lastSync {
-                        Text("Synced \(last, format: .relative(presentation: .named))")
+                        Text("Synced \(last, format: .relative(presentation: .named, unitsStyle: .abbreviated))")
+                            .lineLimit(1)
                     } else {
                         Text("Sync history")
                     }

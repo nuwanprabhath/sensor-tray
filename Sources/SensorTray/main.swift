@@ -9,7 +9,8 @@ import SensorTrayCore
 //   SensorTray --history <uuid> [minutes] download a sensor's stored history (default 60 min)
 //   SensorTray --dump                     print configured sensors and stored data ranges
 //   SensorTray --purifier [seconds]       find Philips purifiers on the LAN and print their status updates
-//   SensorTray --snapshot <png> [light|dark] [sensors] [--range 1Y] render the popover (or Sensors window)
+//   SensorTray --snapshot <png> [light|dark] [sensors|calibration] [--range 1Y] render the popover (or another window)
+//   SensorTray --calibrate <sensor> <reference> <start> [end] [settle]  fit a calibration (names; times as 2026-10-20T08:45)
 //   SensorTray --generate-demo <db> [years]  synthetic multi-year database for UI/perf testing
 //   SENSORTRAY_DB=<db> SensorTray …          use another database (e.g. a demo or a copy of real data)
 let arguments = CommandLine.arguments
@@ -40,6 +41,8 @@ if arguments.contains("--scan") {
     try MainActor.assumeIsolated { try CLI.generateDemo() }
 } else if arguments.contains("--snapshot") {
     MainActor.assumeIsolated { CLI.snapshot() }
+} else if arguments.contains("--calibrate") {
+    MainActor.assumeIsolated { CLI.calibrate() }
 } else if arguments.contains("--dump") {
     try MainActor.assumeIsolated { try CLI.dump() }
 } else {
@@ -121,6 +124,35 @@ enum CLI {
         }
     }
 
+    static func calibrate() {
+        guard let i = arguments.firstIndex(of: "--calibrate"), arguments.count > i + 3,
+              let store = try? Store(path: Store.defaultPath()) else {
+            print("Usage: --calibrate <sensor name> <reference name> <start> [end] [settle minutes]")
+            return
+        }
+        let parser = DateFormatter()
+        parser.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        let sensors = store.sensors()
+        guard let raw = sensors.first(where: { $0.name == arguments[i + 1] }),
+              let ref = sensors.first(where: { $0.name == arguments[i + 2] }),
+              let start = parser.date(from: arguments[i + 3]) else {
+            print("Unknown sensor or bad start time. Sensors: \(sensors.map(\.name))")
+            return
+        }
+        let end = arguments.count > i + 4 ? parser.date(from: arguments[i + 4]) ?? Date() : Date()
+        let settle = arguments.count > i + 5 ? Int(arguments[i + 5]) ?? 30 : 30
+        let pairs = store.calibrationPairs(sensor: raw.id, reference: ref.id,
+                                           from: Int.nowMinute(start) + settle, to: Int.nowMinute(end))
+        print("\(pairs.count) ten-minute pairs")
+        for p in pairs.prefix(400) {
+            print(String(format: "%@  raw %.2f°C %.1f%%  ref %.2f°C %.1f%%  Δ %+.2f°C %+.1f%%",
+                         Date(timeIntervalSince1970: TimeInterval(p.minute * 60)).formatted(date: .omitted, time: .shortened),
+                         p.rawTemp, p.rawHumidity, p.refTemp, p.refHumidity, p.refTemp - p.rawTemp, p.refHumidity - p.rawHumidity))
+        }
+        guard let fit = Calibrator.fit(pairs) else { return print("Not enough pairs (need an hour)") }
+        print(fit)
+    }
+
     static func snapshot() {
         guard let path = argument(after: "--snapshot") else {
             print("Usage: --snapshot <file.png> [light|dark] [sensors]")
@@ -142,7 +174,9 @@ enum CLI {
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let root = Group {
-            if arguments.contains("sensors") { SensorsView() } else { PopoverView() }
+            if arguments.contains("sensors") { SensorsView() }
+            else if arguments.contains("calibration") { CalibrationView() }
+            else { PopoverView() }
         }
             .defaultAppStorage(defaults)
             .environmentObject(model)

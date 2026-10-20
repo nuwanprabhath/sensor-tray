@@ -24,7 +24,7 @@ import SQLite3
 public final class Store: @unchecked Sendable {
     public enum StoreError: Error { case open(String), sql(String) }
 
-    public static let schemaVersion: Int32 = 5
+    public static let schemaVersion: Int32 = 6
 
     private var db: OpaquePointer?
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -120,9 +120,25 @@ public final class Store: @unchecked Sendable {
         CREATE INDEX IF NOT EXISTS events_minute ON events(minute);
         """
 
+    private static let schemaV6 = """
+        CREATE TABLE IF NOT EXISTS calibrations(
+            sensor TEXT PRIMARY KEY,      -- sensor UUID being corrected
+            reference TEXT NOT NULL,      -- sensor UUID it should match
+            enabled INTEGER NOT NULL DEFAULT 1,
+            fit TEXT                      -- CalibrationFit as JSON, over all sessions
+        );
+        CREATE TABLE IF NOT EXISTS calibration_sessions(
+            id INTEGER PRIMARY KEY,
+            sensor TEXT NOT NULL,
+            start INTEGER NOT NULL,
+            end INTEGER NOT NULL,
+            settle INTEGER NOT NULL DEFAULT 30
+        );
+        """
+
     /// Brings any database up to the current schema, one transaction:
     /// v1 (TEXT sensor ids, REAL values, no rollup) → v2 → v3 (air tables)
-    /// → v4 (outdoor flag) → v5 (event markers).
+    /// → v4 (outdoor flag) → v5 (event markers) → v6 (calibrations).
     private func migrate() throws {
         try exec("PRAGMA journal_mode=WAL")
         let version = userVersion
@@ -135,6 +151,7 @@ public final class Store: @unchecked Sendable {
             try exec(Self.schemaV3)
             if version < 4 { try exec("ALTER TABLE sensors ADD COLUMN is_outdoor INTEGER NOT NULL DEFAULT 0") }
             try exec(Self.schemaV5)
+            try exec(Self.schemaV6)
             try exec("PRAGMA user_version = \(Self.schemaVersion)")
             try exec("COMMIT")
         } catch {
@@ -219,6 +236,9 @@ public final class Store: @unchecked Sendable {
     }
 
     public func delete(id: UUID) {
+        run("DELETE FROM calibration_sessions WHERE sensor IN (SELECT sensor FROM calibrations WHERE sensor = ?1 OR reference = ?1)",
+            [id.uuidString])
+        run("DELETE FROM calibrations WHERE sensor = ?1 OR reference = ?1", [id.uuidString])
         run("DELETE FROM samples WHERE sensor = \(Self.key)", [id.uuidString])
         run("DELETE FROM hourly WHERE sensor = \(Self.key)", [id.uuidString])
         run("DELETE FROM air WHERE sensor = \(Self.key)", [id.uuidString])
@@ -437,6 +457,70 @@ public final class Store: @unchecked Sendable {
 
     public func deleteEvent(id: Int) {
         run("DELETE FROM events WHERE id = ?", [id])
+    }
+
+    // MARK: Calibration
+
+    public func calibrations() -> [SensorCalibration] {
+        let sessions = query("SELECT sensor, id, start, end, settle FROM calibration_sessions ORDER BY start, id") { s in
+            (text(s, 0), CalibrationSession(id: Int(sqlite3_column_int64(s, 1)), start: Int(sqlite3_column_int64(s, 2)),
+                                            end: Int(sqlite3_column_int64(s, 3)), settle: Int(sqlite3_column_int64(s, 4))))
+        }
+        return query("SELECT sensor, reference, enabled, fit FROM calibrations") { s in
+            guard let sensor = UUID(uuidString: text(s, 0)), let reference = UUID(uuidString: text(s, 1)) else { return nil }
+            let fit = sqlite3_column_type(s, 3) == SQLITE_NULL ? nil
+                : try? JSONDecoder().decode(CalibrationFit.self, from: Data(text(s, 3).utf8))
+            return SensorCalibration(sensor: sensor, reference: reference, enabled: sqlite3_column_int(s, 2) != 0, fit: fit,
+                                     sessions: sessions.filter { $0.0 == text(s, 0) }.map(\.1))
+        }
+    }
+
+    /// Adds a side-by-side session to `sensor`'s calibration against
+    /// `reference`. A calibration against a different reference is replaced,
+    /// since its sessions measured something else.
+    @discardableResult
+    public func addCalibrationSession(sensor: UUID, reference: UUID, start: Int, end: Int, settle: Int) -> Int {
+        let existing = query("SELECT reference FROM calibrations WHERE sensor = ?", [sensor.uuidString]) { s in text(s, 0) }.first
+        if let existing, existing != reference.uuidString {
+            deleteCalibration(sensor: sensor)
+        }
+        run("INSERT OR IGNORE INTO calibrations(sensor, reference) VALUES(?, ?)", [sensor.uuidString, reference.uuidString])
+        run("INSERT INTO calibration_sessions(sensor, start, end, settle) VALUES(?, ?, ?, ?)",
+            [sensor.uuidString, start, end, settle])
+        return Int(sqlite3_last_insert_rowid(db))
+    }
+
+    public func deleteCalibrationSession(id: Int) {
+        run("DELETE FROM calibration_sessions WHERE id = ?", [id])
+    }
+
+    public func deleteCalibration(sensor: UUID) {
+        run("DELETE FROM calibration_sessions WHERE sensor = ?", [sensor.uuidString])
+        run("DELETE FROM calibrations WHERE sensor = ?", [sensor.uuidString])
+    }
+
+    public func setCalibrationEnabled(sensor: UUID, enabled: Bool) {
+        run("UPDATE calibrations SET enabled = ? WHERE sensor = ?", [enabled ? 1 : 0, sensor.uuidString])
+    }
+
+    public func setCalibrationFit(sensor: UUID, fit: CalibrationFit?) {
+        let json = fit.flatMap { try? JSONEncoder().encode($0) }.map { String(decoding: $0, as: UTF8.self) }
+        run("UPDATE calibrations SET fit = ? WHERE sensor = ?", [json as Any, sensor.uuidString])
+    }
+
+    /// Both sensors' readings in `from...to`, averaged per 10 minutes, for
+    /// buckets where they share at least 5 minutes.
+    public func calibrationPairs(sensor: UUID, reference: UUID, from: Int, to: Int) -> [CalibrationPair] {
+        query("""
+            SELECT a.minute / 10 * 10, AVG(a.t), AVG(a.h), AVG(b.t), AVG(b.h)
+            FROM samples a JOIN samples b ON b.sensor = \(Self.key) AND b.minute = a.minute
+            WHERE a.sensor = \(Self.key) AND a.minute BETWEEN ? AND ?
+            GROUP BY a.minute / 10 HAVING COUNT(*) >= 5 ORDER BY 1
+            """, [reference.uuidString, sensor.uuidString, from, to]) { s in
+            CalibrationPair(minute: Int(sqlite3_column_int64(s, 0)),
+                            rawTemp: sqlite3_column_double(s, 1) / 10, rawHumidity: sqlite3_column_double(s, 2) / 10,
+                            refTemp: sqlite3_column_double(s, 3) / 10, refHumidity: sqlite3_column_double(s, 4) / 10)
+        }
     }
 
     // MARK: SQLite plumbing

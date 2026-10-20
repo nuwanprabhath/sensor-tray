@@ -9,6 +9,7 @@ struct SensorsView: View {
     @EnvironmentObject private var model: AppModel
     @StateObject private var launchAtLogin = ViewState(LoginItem.isEnabled)
     @StateObject private var confirmRemove = ViewState<SensorConfig?>(nil)
+    @Environment(\.openWindow) private var openWindow
     @AppStorage(MenuBarLayout.key) private var layout: MenuBarLayout = .stacked
 
     var body: some View {
@@ -52,6 +53,20 @@ struct SensorsView: View {
             }
 
             SparkWindowPicker(charts: model.charts)
+
+            HStack(spacing: 8) {
+                Text("Calibration")
+                Button("Calibrate sensors…") {
+                    openWindow(id: "calibration")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                .controlSize(.small)
+                .disabled(model.sensors.filter { !$0.model.isAirPurifier }.count < 2)
+                Text(calibrationCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
 
             if model.outdoorSensor != nil {
                 HStack(spacing: 8) {
@@ -105,6 +120,11 @@ struct SensorsView: View {
         } message: {
             Text("Its stored history is deleted too.")
         }
+    }
+
+    private var calibrationCaption: String {
+        let count = model.calibrations.values.filter { $0.fit != nil }.count
+        return count == 0 ? "Match sensors of different brands" : count == 1 ? "1 sensor corrected" : "\(count) sensors corrected"
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -201,7 +221,7 @@ private struct ConfiguredRow: View {
         }
         // The advertised name (e.g. "GVH5075_8D84") tells identical units apart.
         var parts = [model.nearby[sensor.id]?.advert.name ?? "\(sensor.model.brand.displayName) \(sensor.model.displayName)"]
-        if let live = model.latest[sensor.id] {
+        if let live = model.displayReading(sensor.id) {
             parts.append(String(format: "%.1f°C · %.0f%%", live.reading.tempC, live.reading.humidity))
         }
         return parts.joined(separator: " · ")
