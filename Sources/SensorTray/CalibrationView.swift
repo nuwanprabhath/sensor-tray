@@ -217,7 +217,7 @@ struct CalibrationView: View {
                     AxisGridLine().foregroundStyle(Color.primary.opacity(0.15))
                     AxisValueLabel {
                         if let v = value.as(Double.self) {
-                            Text(SensorCard.signed(v, decimals: isTemp ? 1 : 0) + (isTemp ? "°C" : "%")).font(.system(size: 9))
+                            Text(Self.axisLabel(v, unit: isTemp ? "°C" : "%")).font(.system(size: 9))
                         }
                     }
                 }
@@ -264,6 +264,16 @@ struct CalibrationView: View {
     }
 
     // MARK: Helpers
+
+    /// Enough decimals that neighbouring ticks never print the same
+    /// (small differences put ticks at 0.05 or 0.02 steps).
+    static func axisLabel(_ v: Double, unit: String) -> String {
+        let decimals = (0...2).first { d in
+            let scale = pow(10, Double(d))
+            return abs(v * scale - (v * scale).rounded()) < 0.001
+        } ?? 2
+        return SensorCard.signed(v, decimals: decimals) + unit
+    }
 
     private func name(_ id: UUID?) -> String {
         id.flatMap { id in model.sensors.first { $0.id == id }?.name } ?? "?"

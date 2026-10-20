@@ -3,7 +3,7 @@
 A native macOS menu bar app for Bluetooth thermo-hygrometers and Wi-Fi air purifiers. It shows the temperature and humidity of your main sensor in the menu bar (and, if you have one outside, the outdoor sensor next to it), and a click opens every sensor with a chart of its history. It replaces juggling the Govee and ThermoPro phone apps.
 
 <p align="center">
-  <img src="docs/screenshot-dark.png" alt="Sensor Tray popover: cards for Living room, Outdoor, Bedroom and an air purifier, each with a one-hour sparkline marked where the windows were opened, above a six-hour temperature chart with the marker and a strip showing each room cooling since then" width="360">
+  <img src="docs/screenshot-dark.png" alt="Sensor Tray popover: cards for Living room, Outdoor, a calibrated Bedroom (with its calibration switch) and an air purifier, each with a one-hour sparkline and an indoor-versus-outdoor comparison, above a six-hour temperature chart where the calibrated Bedroom line tracks Living room, a marker strip, and the Calibrated switch in the footer" width="360">
 </p>
 
 ## Supported sensors
@@ -40,7 +40,11 @@ For each corrected sensor, against the reference you pick:
 4. **Pool sessions**: several sessions (say, a cool day and a warm day) are fitted together, so the correction can change with temperature. Beyond the calibrated range it holds at its edge value instead of extrapolating.
 5. **Chains** work: if A matches B and B matches C, A is fitted to B's corrected readings. Cycles can't be created.
 
-The window reports how much of a difference is left after correcting (RMS). For example, a TP357S against an H5075 over one day came out at −0.10 °C and +7.2 %RH, with ±0.08 °C and ±0.6 % left.
+The window reports how much of a difference is left after correcting (RMS). For example, a ThermoPro TP357S side by side with a Govee H5075 for a day came out at −0.09 °C for temperature. For humidity it needed +7.9 % at 45 %RH, easing to +6.6 % at 55 %RH, with ±0.08 °C and ±0.6 % left. The humidity readings spanned more than 10 %, so that correction varies with the reading.
+
+<p align="center">
+  <img src="docs/calibration.png" alt="Calibration window: Bedroom calibrated to match Living room (temperature −0.09 °C, humidity +7.9 % at 45 % to +6.6 % at 55 %) from a session on 20 Oct, 8:45 am to 7:15 pm, above the form for adding a side-by-side session with a live preview of the fit and a chart of the measured difference against the applied correction" width="520">
+</p>
 
 ## Storage & performance
 
@@ -56,7 +60,7 @@ The window reports how much of a difference is left after correcting (RMS). For 
 </p>
 
 <p align="center">
-  <img src="docs/sensors.png" alt="Sensors window listing configured sensors with outdoor, star, reorder, export and remove controls, a Nearby section, Card charts and Menu bar layout pickers, and a Launch at login toggle" width="480">
+  <img src="docs/sensors.png" alt="Sensors window listing configured sensors with outdoor, star, reorder, export and remove controls, a Nearby section, Card charts, Calibration and Menu bar settings, and a Launch at login toggle" width="480">
 </p>
 
 ## Download & install
